@@ -12,6 +12,7 @@ import io
 import json
 import os
 import queue
+import struct
 import threading
 import time
 from pathlib import Path
@@ -48,16 +49,79 @@ observer_lock = threading.Lock()
 
 _FLASH_TAG = 37385   # ExifIFD.Flash
 _DTO_TAG   = 36867   # ExifIFD.DateTimeOriginal
-_EXIF_IFD  = 0x8769  # pointer tag for ExifIFD sub-IFD
+_EXIF_IFD  = 0x8769  # IFD0 pointer tag for ExifIFD sub-IFD
+
+# Canon CR3 uses ISOBMFF. The ExifIFD lives in a CMT2 sub-box inside a
+# uuid box (UUID 85c0b687...) inside the moov box.
+_CANON_UUID = bytes.fromhex('85c0b687820f11e08111f4ce462b6a48')
 
 
 def _exif_from_image(img: Image.Image) -> tuple[bool | None, str | None]:
-    """Read flash and timestamp from an open Pillow image."""
+    """Read Flash and DateTimeOriginal from an open Pillow image."""
     ifd = img.getexif().get_ifd(_EXIF_IFD)
     flash_raw = ifd.get(_FLASH_TAG)
     dto       = ifd.get(_DTO_TAG)
     flash_fired = bool(int(flash_raw) & 0x01) if flash_raw is not None else None
     return flash_fired, str(dto) if dto else None
+
+
+def _read_tiff_tag(tiff: bytes, tag: int) -> 'int | str | None':
+    """Return the value of a tag from a raw TIFF IFD block."""
+    if len(tiff) < 8:
+        return None
+    endian = '<' if tiff[:2] == b'II' else '>'
+    ifd_off = struct.unpack_from(endian + 'I', tiff, 4)[0]
+    n = struct.unpack_from(endian + 'H', tiff, ifd_off)[0]
+    for i in range(n):
+        off = ifd_off + 2 + i * 12
+        if off + 12 > len(tiff):
+            break
+        t, typ, count = struct.unpack_from(endian + 'HHI', tiff, off)
+        if t != tag:
+            continue
+        raw = tiff[off + 8:off + 12]
+        if typ == 3 and count == 1:   # SHORT — inline
+            return struct.unpack_from(endian + 'H', raw)[0]
+        if typ == 4 and count == 1:   # LONG — inline
+            return struct.unpack_from(endian + 'I', raw)[0]
+        if typ == 2:                  # ASCII
+            if count > 4:
+                val_off = struct.unpack_from(endian + 'I', raw)[0]
+                return tiff[val_off:val_off + count].rstrip(b'\x00').decode('ascii', 'replace')
+            return raw[:count].rstrip(b'\x00').decode('ascii', 'replace')
+    return None
+
+
+def _cr3_cmt2(data: bytes) -> 'bytes | None':
+    """Extract the CMT2 (ExifIFD) box payload from a Canon CR3 file's bytes."""
+    def iter_boxes(buf: bytes, start: int, end: int):
+        off = start
+        while off + 8 <= end:
+            size = struct.unpack_from('>I', buf, off)[0]
+            btype = buf[off + 4:off + 8]
+            payload = off + 8
+            if size == 1:
+                size = struct.unpack_from('>Q', buf, off + 8)[0]
+                payload = off + 16
+            if size == 0:
+                size = end - off
+            yield btype, payload, off + size
+            off += size
+
+    moov_start = moov_end = None
+    for btype, s, e in iter_boxes(data, 0, len(data)):
+        if btype == b'moov':
+            moov_start, moov_end = s, e
+            break
+    if moov_start is None:
+        return None
+
+    for btype, s, e in iter_boxes(data, moov_start, moov_end):
+        if btype == b'uuid' and data[s:s + 16] == _CANON_UUID:
+            for btype2, s2, e2 in iter_boxes(data, s + 16, e):
+                if btype2 == b'CMT2':
+                    return data[s2:e2]
+    return None
 
 
 def get_exif_info(filepath: Path) -> tuple[bool | None, str | None]:
@@ -66,12 +130,13 @@ def get_exif_info(filepath: Path) -> tuple[bool | None, str | None]:
         if filepath.suffix.lower() in JPEG_EXTENSIONS:
             with Image.open(filepath) as img:
                 return _exif_from_image(img)
-        # Raw file: extract embedded JPEG thumbnail and read its EXIF
-        with rawpy.imread(str(filepath)) as raw:
-            thumb = raw.extract_thumb()
-            if thumb.format == rawpy.ThumbFormat.JPEG:
-                with Image.open(io.BytesIO(bytes(thumb.data))) as img:
-                    return _exif_from_image(img)
+        # Raw/CR3: parse EXIF directly from the ISOBMFF CMT2 box
+        cmt2 = _cr3_cmt2(filepath.read_bytes())
+        if cmt2 is not None:
+            flash_raw = _read_tiff_tag(cmt2, _FLASH_TAG)
+            dto       = _read_tiff_tag(cmt2, _DTO_TAG)
+            flash_fired = bool(int(flash_raw) & 0x01) if flash_raw is not None else None
+            return flash_fired, str(dto) if dto else None
     except Exception as e:
         print(f'EXIF error for {filepath.name}: {e}')
     return None, None
