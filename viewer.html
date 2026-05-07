@@ -452,18 +452,21 @@ button:hover {
   // ---------------------------------------------------------------------------
   // API helpers
   // ---------------------------------------------------------------------------
+  var fetchTimer = null;
   function fetchAndRender() {
-    fetch('/api/series')
-      .then(function (r) { return r.json(); })
-      .then(function (series) {
-        currentSeries = series;
-        renderGallery(series);
-
-        if (viewerOpen && newestFilename) {
-          jumpToNewest(series);
-        }
-      })
-      .catch(function (err) { console.error('fetch series:', err); });
+    clearTimeout(fetchTimer);
+    fetchTimer = setTimeout(function () {
+      fetch('/api/series')
+        .then(function (r) { return r.json(); })
+        .then(function (series) {
+          currentSeries = series;
+          renderGallery(series);
+          if (viewerOpen && newestFilename) {
+            jumpToNewest(series);
+          }
+        })
+        .catch(function (err) { console.error('fetch series:', err); });
+    }, 50);
   }
 
   function previewUrl(filename) {
@@ -479,7 +482,7 @@ button:hover {
     document.getElementById('photo-count').textContent =
       totalPhotos === 0 ? '' : totalPhotos + ' photo' + (totalPhotos !== 1 ? 's' : '');
 
-    // Build a flat list of cards: {seriesIdx, overlayIdx (-1 = base), filename}
+    // Build flat card list in timestamp order
     var cards = [];
     series.forEach(function (s, si) {
       cards.push({ seriesIdx: si, overlayIdx: -1, filename: s.base.filename });
@@ -488,70 +491,75 @@ button:hover {
       });
     });
 
-    // Keep existing DOM cards and append only new ones
-    var existingCount = gallery.children.length;
+    // Pool existing DOM nodes by filename so we can reuse them in any order
+    var pool = {};
+    Array.from(gallery.children).forEach(function (el) {
+      pool[el.dataset.filename] = el;
+    });
+
+    gallery.innerHTML = '';
     var newNewestEl = null;
 
-    cards.forEach(function (c, idx) {
-      if (idx < existingCount) {
-        // Update newest marker only
-        var existing = gallery.children[idx];
-        existing.classList.toggle('tether-card--newest', c.filename === newestFilename);
-        if (c.filename === newestFilename) newNewestEl = existing;
-        return;
-      }
-
-      var s = series[c.seriesIdx];
-      var card = document.createElement('div');
-      card.className = 'tether-card' + (c.filename === newestFilename ? ' tether-card--newest' : '');
-      card.setAttribute('tabindex', '0');
+    cards.forEach(function (c) {
+      var card = pool[c.filename] || createCard(c, series[c.seriesIdx]);
+      card.classList.toggle('tether-card--newest', c.filename === newestFilename);
       if (c.filename === newestFilename) newNewestEl = card;
-
-      var wrap = document.createElement('div');
-      wrap.className = 'tether-card__img-wrap';
-
-      if (c.overlayIdx === -1) {
-        // Base photo card
-        var badge = document.createElement('div');
-        badge.className = 'tether-card__badge';
-        badge.textContent = 'Flash';
-        wrap.appendChild(badge);
-
-        var img = document.createElement('img');
-        img.src = previewUrl(c.filename);
-        img.alt = c.filename;
-        img.loading = 'lazy';
-        wrap.appendChild(img);
-      } else {
-        // Overlay card: composited canvas
-        var canvas = document.createElement('canvas');
-        canvas.width = 1;
-        canvas.height = 1;
-        drawCompositeThumb(canvas, s.base.filename, s.overlays[c.overlayIdx].filename);
-        wrap.appendChild(canvas);
-      }
-
-      var info = document.createElement('div');
-      info.className = 'tether-card__info';
-      info.textContent = c.filename;
-
-      card.appendChild(wrap);
-      card.appendChild(info);
-
-      var si = c.seriesIdx;
-      var oi = c.overlayIdx;
-      card.addEventListener('click', function () { openViewer(series[si], oi === -1 ? null : oi); });
-      card.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter' || e.key === ' ') openViewer(series[si], oi === -1 ? null : oi);
-      });
-
       gallery.appendChild(card);
     });
 
-    // Scroll newest card into view
     if (newNewestEl) {
       newNewestEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
+  }
+
+  function createCard(c, s) {
+    var card = document.createElement('div');
+    card.className = 'tether-card';
+    card.setAttribute('tabindex', '0');
+    card.dataset.filename = c.filename;
+    card.dataset.baseFilename = s.base.filename;
+    card.dataset.overlayIdx = String(c.overlayIdx);
+
+    var wrap = document.createElement('div');
+    wrap.className = 'tether-card__img-wrap';
+
+    if (c.overlayIdx === -1) {
+      var badge = document.createElement('div');
+      badge.className = 'tether-card__badge';
+      badge.textContent = 'Flash';
+      wrap.appendChild(badge);
+
+      var img = document.createElement('img');
+      img.src = previewUrl(c.filename);
+      img.alt = c.filename;
+      img.loading = 'lazy';
+      wrap.appendChild(img);
+    } else {
+      var canvas = document.createElement('canvas');
+      canvas.width = 1;
+      canvas.height = 1;
+      drawCompositeThumb(canvas, s.base.filename, s.overlays[c.overlayIdx].filename);
+      wrap.appendChild(canvas);
+    }
+
+    var info = document.createElement('div');
+    info.className = 'tether-card__info';
+    info.textContent = c.filename;
+
+    card.appendChild(wrap);
+    card.appendChild(info);
+
+    card.addEventListener('click', function () {
+      var baseFilename = this.dataset.baseFilename;
+      var oi = parseInt(this.dataset.overlayIdx, 10);
+      var entry = currentSeries.find(function (s) { return s.base.filename === baseFilename; });
+      if (entry) openViewer(entry, oi === -1 ? null : oi);
+    });
+    card.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') this.click();
+    });
+
+    return card;
   }
 
   function drawCompositeThumb(canvas, baseFilename, overlayFilename) {
