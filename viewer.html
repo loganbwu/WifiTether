@@ -385,7 +385,7 @@ button:hover {
           Exit
         </button>
       </div>
-      <p class="ctrl-instructions">Hover to preview an overlay; click to enable it. Combine multiple exposures to preview the composite.</p>
+      <p class="ctrl-instructions">Hover to preview an overlay; click to enable it. Combine multiple exposures to preview the composite. Use ← → to navigate between series.</p>
       <div id="viewer-overlays-container"></div>
     </div>
   </div>
@@ -600,18 +600,19 @@ button:hover {
   // ---------------------------------------------------------------------------
   // Viewer
   // ---------------------------------------------------------------------------
-  function openViewer(series, overlayIdx) {
+  function openViewer(series, overlayIdx, enableAll) {
     viewerOpen = true;
     viewerSeries = series;
     viewerBaseImg = null;
     viewerOverlayImgs = [];
     viewerSettings = series.overlays.map(function (_, i) {
+      var on = enableAll ? true : (i === overlayIdx);
       return {
-        enabled: i === overlayIdx,
+        enabled: on,
         hovering: false,
-        suppressComparing: i === overlayIdx,
-        currentAlpha: i === overlayIdx ? 1 : 0,
-        targetAlpha: i === overlayIdx ? 1 : 0,
+        suppressComparing: on,
+        currentAlpha: on ? 1 : 0,
+        targetAlpha: on ? 1 : 0,
       };
     });
 
@@ -633,11 +634,36 @@ button:hover {
     document.body.style.overflow = '';
   }
 
+  function navigateSeries(delta) {
+    if (!currentSeries.length || !viewerSeries) return;
+    var idx = currentSeries.findIndex(function (s) { return s.base.filename === viewerSeries.base.filename; });
+    if (idx === -1) return;
+    var newIdx = idx + delta;
+    if (newIdx < 0 || newIdx >= currentSeries.length) return;
+    openViewer(currentSeries[newIdx], null, true);
+  }
+
   function jumpToNewest(series) {
     if (!series.length) return;
     var last = series[series.length - 1];
-    var oi = last.overlays.length > 0 ? last.overlays.length - 1 : null;
-    openViewer(last, oi);
+
+    // New overlay on the series currently open: preserve enabled state, append new overlay
+    if (viewerSeries && viewerSeries.base.filename === last.base.filename) {
+      var prevCount = viewerSettings.length;
+      var newCount = last.overlays.length;
+      if (newCount > prevCount) {
+        viewerSeries = last;
+        for (var i = prevCount; i < newCount; i++) {
+          viewerSettings.push({ enabled: true, hovering: false, suppressComparing: true, currentAlpha: 0, targetAlpha: 1 });
+        }
+        renderViewerControls(last);
+        loadViewerImages(last);
+        return;
+      }
+    }
+
+    // New series or overlay on a different series: jump there with all overlays on
+    openViewer(last, null, true);
   }
 
   function renderViewerControls(series) {
@@ -854,7 +880,10 @@ button:hover {
     if (e.target === this) closeViewer();
   });
   document.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape' && viewerOpen) closeViewer();
+    if (!viewerOpen) return;
+    if (e.key === 'Escape') closeViewer();
+    if (e.key === 'ArrowLeft')  { e.preventDefault(); navigateSeries(-1); }
+    if (e.key === 'ArrowRight') { e.preventDefault(); navigateSeries(1); }
   });
 
   // ---------------------------------------------------------------------------
