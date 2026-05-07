@@ -640,21 +640,24 @@ button:hover {
     if (idx === -1) return;
     var newIdx = idx + delta;
     if (newIdx < 0 || newIdx >= currentSeries.length) return;
-    openViewer(currentSeries[newIdx], null, true);
+    var s = currentSeries[newIdx];
+    openViewer(s, s.overlays.length > 0 ? s.overlays.length - 1 : null);
   }
 
   function jumpToNewest(series) {
     if (!series.length) return;
     var last = series[series.length - 1];
 
-    // New overlay on the series currently open: preserve enabled state, append new overlay
+    // New overlay on the series currently open: disable previous overlays, enable only the new one
     if (viewerSeries && viewerSeries.base.filename === last.base.filename) {
       var prevCount = viewerSettings.length;
       var newCount = last.overlays.length;
       if (newCount > prevCount) {
         viewerSeries = last;
+        viewerSettings.forEach(function (s) { s.enabled = false; s.suppressComparing = false; s.targetAlpha = 0; });
         for (var i = prevCount; i < newCount; i++) {
-          viewerSettings.push({ enabled: true, hovering: false, suppressComparing: true, currentAlpha: 0, targetAlpha: 1 });
+          var on = (i === newCount - 1);
+          viewerSettings.push({ enabled: on, hovering: false, suppressComparing: on, currentAlpha: 0, targetAlpha: on ? 1 : 0 });
         }
         renderViewerControls(last);
         loadViewerImages(last);
@@ -662,8 +665,8 @@ button:hover {
       }
     }
 
-    // New series or overlay on a different series: jump there with all overlays on
-    openViewer(last, null, true);
+    // New series or overlay on a different series: jump there, enable only the last overlay
+    openViewer(last, last.overlays.length > 0 ? last.overlays.length - 1 : null);
   }
 
   function renderViewerControls(series) {
