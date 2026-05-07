@@ -9,13 +9,22 @@ dependencies = [
     "flask>=3.0",
     "flask-cors>=4.0",
     "watchdog>=4.0",
+    "pillow>=11.0",
+    "rawpy>=0.21",
 ]
 requires-python = ">= 3.12"
 
 [tool.rye]
 managed = true
 virtual = true
-dev-dependencies = []
+dev-dependencies = [
+    "pytest>=8.0",
+    "piexif>=1.1",
+]
 
 [tool.rye.scripts]
 start = { cmd = "python server.py" }
+test = { cmd = "pytest tests/ -v" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

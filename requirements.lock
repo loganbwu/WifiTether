@@ -24,6 +24,10 @@ markupsafe==3.0.3
     # via flask
     # via jinja2
     # via werkzeug
+numpy==2.4.4
+    # via rawpy
+pillow==12.2.0
+rawpy==0.27.0
 watchdog==6.0.0
 werkzeug==3.1.8
     # via flask

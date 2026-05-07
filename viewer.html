@@ -858,7 +858,6 @@ button:hover {
   fetch('/api/status')
     .then(function (r) { return r.json(); })
     .then(function (s) {
-      if (!s.exiftool) setStatus('warn', 'exiftool not found — run: brew install exiftool');
       if (s.folder) {
         document.getElementById('folder-input').value = s.folder;
         fetchAndRender();

@@ -3,24 +3,23 @@
 Tethering viewer — local Flask server.
 
 Usage:
-    pip install -r requirements.txt
-    python server.py
+    rye sync
+    rye run start
     # Open http://localhost:5001
-
-Requires exiftool to be installed:
-    brew install exiftool
 """
 
+import io
 import json
 import os
 import queue
-import subprocess
 import threading
 import time
 from pathlib import Path
 
+import rawpy
 from flask import Flask, Response, jsonify, request, send_file, send_from_directory
 from flask_cors import CORS
+from PIL import Image
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
@@ -47,35 +46,35 @@ observer: Observer | None = None
 observer_lock = threading.Lock()
 
 
-def check_exiftool() -> bool:
-    try:
-        r = subprocess.run(['exiftool', '-ver'], capture_output=True, timeout=5)
-        return r.returncode == 0
-    except FileNotFoundError:
-        return False
+_FLASH_TAG = 37385   # ExifIFD.Flash
+_DTO_TAG   = 36867   # ExifIFD.DateTimeOriginal
+_EXIF_IFD  = 0x8769  # pointer tag for ExifIFD sub-IFD
+
+
+def _exif_from_image(img: Image.Image) -> tuple[bool | None, str | None]:
+    """Read flash and timestamp from an open Pillow image."""
+    ifd = img.getexif().get_ifd(_EXIF_IFD)
+    flash_raw = ifd.get(_FLASH_TAG)
+    dto       = ifd.get(_DTO_TAG)
+    flash_fired = bool(int(flash_raw) & 0x01) if flash_raw is not None else None
+    return flash_fired, str(dto) if dto else None
 
 
 def get_exif_info(filepath: Path) -> tuple[bool | None, str | None]:
     """Return (flash_fired, timestamp_str). Returns (None, None) on failure."""
     try:
-        r = subprocess.run(
-            ['exiftool', '-json', '-n', '-Flash', '-DateTimeOriginal', str(filepath)],
-            capture_output=True, text=True, timeout=15,
-        )
-        if r.returncode != 0 or not r.stdout.strip():
-            return None, None
-        data = json.loads(r.stdout)
-        if not data:
-            return None, None
-        exif = data[0]
-        flash_raw = exif.get('Flash')
-        # Bit 0: flash fired (1) or not (0)
-        flash_fired = bool(int(flash_raw) & 0x01) if flash_raw is not None else False
-        timestamp = exif.get('DateTimeOriginal', '')
-        return flash_fired, str(timestamp)
+        if filepath.suffix.lower() in JPEG_EXTENSIONS:
+            with Image.open(filepath) as img:
+                return _exif_from_image(img)
+        # Raw file: extract embedded JPEG thumbnail and read its EXIF
+        with rawpy.imread(str(filepath)) as raw:
+            thumb = raw.extract_thumb()
+            if thumb.format == rawpy.ThumbFormat.JPEG:
+                with Image.open(io.BytesIO(bytes(thumb.data))) as img:
+                    return _exif_from_image(img)
     except Exception as e:
         print(f'EXIF error for {filepath.name}: {e}')
-        return None, None
+    return None, None
 
 
 def extract_preview(filepath: Path) -> Path | None:
@@ -87,17 +86,14 @@ def extract_preview(filepath: Path) -> Path | None:
     if cache_path.exists():
         return cache_path
 
-    for tag in ['-JpgFromRaw', '-PreviewImage']:
-        try:
-            r = subprocess.run(
-                ['exiftool', '-b', tag, str(filepath)],
-                capture_output=True, timeout=20,
-            )
-            if r.returncode == 0 and len(r.stdout) > 1000:
-                cache_path.write_bytes(r.stdout)
+    try:
+        with rawpy.imread(str(filepath)) as raw:
+            thumb = raw.extract_thumb()
+            if thumb.format == rawpy.ThumbFormat.JPEG:
+                cache_path.write_bytes(bytes(thumb.data))
                 return cache_path
-        except Exception:
-            pass
+    except Exception as e:
+        print(f'Preview extraction error for {filepath.name}: {e}')
 
     return None
 
@@ -201,7 +197,6 @@ def api_status():
         folder = state['folder']
         photo_count = len(state['photos'])
     return jsonify({
-        'exiftool': check_exiftool(),
         'folder': folder,
         'photo_count': photo_count,
     })
@@ -296,7 +291,5 @@ def api_stream():
 
 
 if __name__ == '__main__':
-    if not check_exiftool():
-        print('WARNING: exiftool not found. Install with: brew install exiftool')
     print('Tethering viewer: http://localhost:5001')
     app.run(port=5001, debug=False, threaded=True)
