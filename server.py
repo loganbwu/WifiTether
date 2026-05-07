@@ -15,6 +15,7 @@ import queue
 import struct
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import rawpy
@@ -189,14 +190,14 @@ def compute_series(photos: list) -> list:
     return series
 
 
-def process_file(filepath_str: str) -> None:
+def process_file(filepath_str: str, skip_stability_check: bool = False) -> None:
     filepath = Path(filepath_str)
     if filepath.suffix.lower() not in IMG_EXTENSIONS:
         return
     if not filepath.is_file():
         return
 
-    if not wait_for_file_stable(filepath):
+    if not skip_stability_check and not wait_for_file_stable(filepath):
         print(f'File did not stabilise: {filepath.name}')
         return
 
@@ -240,11 +241,11 @@ def notify_clients(event: dict) -> None:
 
 
 def scan_folder(folder: str) -> None:
-    """Process existing files in the folder, sorted by modification time."""
+    """Process existing files in the folder in parallel (files are already fully written)."""
     files = sorted(Path(folder).iterdir(), key=lambda f: f.stat().st_mtime if f.is_file() else 0)
-    for f in files:
-        if f.is_file() and f.suffix.lower() in IMG_EXTENSIONS:
-            process_file(str(f))
+    targets = [str(f) for f in files if f.is_file() and f.suffix.lower() in IMG_EXTENSIONS]
+    with ThreadPoolExecutor() as pool:
+        pool.map(lambda p: process_file(p, skip_stability_check=True), targets)
 
 
 # ---------------------------------------------------------------------------
