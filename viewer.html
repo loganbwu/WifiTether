@@ -364,7 +364,7 @@ button:hover {
 </header>
 
 <div id="folder-form">
-  <input id="folder-input" type="text" placeholder="~/Pictures/2026/2026-05-07" autocomplete="off" spellcheck="false">
+  <input id="folder-input" type="text" autocomplete="off" spellcheck="false">
   <button id="watch-btn">Watch</button>
 </div>
 
@@ -900,6 +900,16 @@ button:hover {
   // Init
   // ---------------------------------------------------------------------------
   connectSSE();
+
+  // Set folder input placeholder to today's date path
+  (function () {
+    var now = new Date();
+    var year = now.getFullYear();
+    var mm = String(now.getMonth() + 1).padStart(2, '0');
+    var dd = String(now.getDate()).padStart(2, '0');
+    var dateStr = year + '-' + mm + '-' + dd;
+    document.getElementById('folder-input').placeholder = '~/Pictures/' + year + '/' + dateStr;
+  }());
 
   // Check if server has an active folder already (e.g. after page refresh)
   fetch('/api/status')
