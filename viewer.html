@@ -908,7 +908,7 @@ button:hover {
     var mm = String(now.getMonth() + 1).padStart(2, '0');
     var dd = String(now.getDate()).padStart(2, '0');
     var dateStr = year + '-' + mm + '-' + dd;
-    document.getElementById('folder-input').placeholder = '~/Pictures/' + year + '/' + dateStr;
+    document.getElementById('folder-input').value = '~/Pictures/' + year + '/' + dateStr;
   }());
 
   // Check if server has an active folder already (e.g. after page refresh)
