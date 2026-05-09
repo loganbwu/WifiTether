@@ -788,7 +788,14 @@ button:hover {
         if (loaded === srcs.length) {
           viewerBaseImg = imgs[0];
           viewerOverlayImgs = imgs.slice(1);
-          redraw();
+          var needsAnimation = viewerSettings.some(function (s) { return Math.abs(s.targetAlpha - s.currentAlpha) > 0.001; });
+          if (needsAnimation) {
+            if (animFrameId) cancelAnimationFrame(animFrameId);
+            lastTimestamp = null;
+            animFrameId = requestAnimationFrame(animationStep);
+          } else {
+            redraw();
+          }
         }
       }
       img.onload = onLoad;
