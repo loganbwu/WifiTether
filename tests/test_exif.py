@@ -33,8 +33,10 @@ def test_missing_file_returns_none(tmp_path):
     assert ts is None
 
 
-def test_extract_preview_jpeg_returns_self(make_jpeg):
-    # JPEG files are already viewable — extract_preview should return the file itself.
+def test_extract_preview_jpeg_returns_cached_thumb(make_jpeg):
     path = make_jpeg('preview_test.jpg', flash=1)
     result = extract_preview(path)
-    assert result == path
+    assert result is not None
+    assert result != path
+    assert result.suffix == '.jpg'
+    assert result.exists()

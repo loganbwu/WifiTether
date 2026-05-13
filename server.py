@@ -8,11 +8,13 @@ Usage:
     # Open http://localhost:5001
 """
 
+import functools
 import io
 import json
 import os
 import queue
 import struct
+import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -21,7 +23,7 @@ from pathlib import Path
 import rawpy
 from flask import Flask, Response, jsonify, request, send_file, send_from_directory
 from flask_cors import CORS
-from PIL import Image
+from PIL import Image, ImageOps
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
@@ -30,6 +32,7 @@ CORS(app)
 
 PREVIEW_CACHE_DIR = Path('/tmp/tether_previews')
 PREVIEW_CACHE_DIR.mkdir(exist_ok=True)
+THUMB_MAX_PX = 800
 
 RAW_EXTENSIONS = {'.cr3', '.cr2', '.nef', '.arw', '.raf', '.dng'}
 JPEG_EXTENSIONS = {'.jpg', '.jpeg', '.png'}
@@ -57,13 +60,15 @@ _EXIF_IFD  = 0x8769  # IFD0 pointer tag for ExifIFD sub-IFD
 _CANON_UUID = bytes.fromhex('85c0b687820f11e08111f4ce462b6a48')
 
 
+def _parse_flash_dto(flash_raw, dto_raw) -> tuple[bool | None, str | None]:
+    flash = bool(int(flash_raw) & 0x01) if flash_raw is not None else None
+    return flash, str(dto_raw) if dto_raw else None
+
+
 def _exif_from_image(img: Image.Image) -> tuple[bool | None, str | None]:
     """Read Flash and DateTimeOriginal from an open Pillow image."""
     ifd = img.getexif().get_ifd(_EXIF_IFD)
-    flash_raw = ifd.get(_FLASH_TAG)
-    dto       = ifd.get(_DTO_TAG)
-    flash_fired = bool(int(flash_raw) & 0x01) if flash_raw is not None else None
-    return flash_fired, str(dto) if dto else None
+    return _parse_flash_dto(ifd.get(_FLASH_TAG), ifd.get(_DTO_TAG))
 
 
 def _read_tiff_tag(tiff: bytes, tag: int) -> 'int | str | None':
@@ -134,33 +139,52 @@ def get_exif_info(filepath: Path) -> tuple[bool | None, str | None]:
         # Raw/CR3: parse EXIF directly from the ISOBMFF CMT2 box
         cmt2 = _cr3_cmt2(filepath.read_bytes())
         if cmt2 is not None:
-            flash_raw = _read_tiff_tag(cmt2, _FLASH_TAG)
-            dto       = _read_tiff_tag(cmt2, _DTO_TAG)
-            flash_fired = bool(int(flash_raw) & 0x01) if flash_raw is not None else None
-            return flash_fired, str(dto) if dto else None
+            return _parse_flash_dto(_read_tiff_tag(cmt2, _FLASH_TAG), _read_tiff_tag(cmt2, _DTO_TAG))
     except Exception as e:
         print(f'EXIF error for {filepath.name}: {e}')
     return None, None
 
 
-def extract_preview(filepath: Path) -> Path | None:
-    """Return path to a JPEG preview. Returns None if extraction fails."""
+def _open_rotated(filepath: Path) -> Image.Image | None:
+    """Open an image and apply EXIF orientation, returning an RGB-ready Image."""
     if filepath.suffix.lower() in JPEG_EXTENSIONS:
-        return filepath
+        return ImageOps.exif_transpose(Image.open(filepath))
+    with rawpy.imread(str(filepath)) as raw:
+        thumb = raw.extract_thumb()
+        if thumb.format == rawpy.ThumbFormat.JPEG:
+            return ImageOps.exif_transpose(Image.open(io.BytesIO(bytes(thumb.data))))
+    return None
 
+
+def extract_preview(filepath: Path) -> Path | None:
+    """Return path to a resized JPEG thumbnail. Returns None if extraction fails."""
     cache_path = PREVIEW_CACHE_DIR / (filepath.stem + '_preview.jpg')
     if cache_path.exists():
         return cache_path
-
     try:
-        with rawpy.imread(str(filepath)) as raw:
-            thumb = raw.extract_thumb()
-            if thumb.format == rawpy.ThumbFormat.JPEG:
-                cache_path.write_bytes(bytes(thumb.data))
-                return cache_path
+        img = _open_rotated(filepath)
+        if img is not None:
+            img = img.convert('RGB')
+            img.thumbnail((THUMB_MAX_PX, THUMB_MAX_PX), Image.LANCZOS)
+            img.save(cache_path, 'JPEG', quality=85)
+            return cache_path
     except Exception as e:
         print(f'Preview extraction error for {filepath.name}: {e}')
+    return None
 
+
+def extract_full(filepath: Path) -> Path | None:
+    """Return path to a full-resolution rotation-corrected JPEG. Returns None on failure."""
+    cache_path = PREVIEW_CACHE_DIR / (filepath.stem + '_full.jpg')
+    if cache_path.exists():
+        return cache_path
+    try:
+        img = _open_rotated(filepath)
+        if img is not None:
+            img.convert('RGB').save(cache_path, 'JPEG', quality=95)
+            return cache_path
+    except Exception as e:
+        print(f'Full extraction error for {filepath.name}: {e}')
     return None
 
 
@@ -187,6 +211,8 @@ def compute_series(photos: list) -> list:
             series.append({'base': photo, 'overlays': []})
         elif series:
             series[-1]['overlays'].append(photo)
+    if not series:
+        series = [{'base': photo, 'overlays': []} for photo in photos]
     return series
 
 
@@ -208,12 +234,22 @@ def process_file(filepath_str: str, skip_stability_check: bool = False) -> None:
 
     preview_path = extract_preview(filepath)
 
+    aspect = None
+    if preview_path:
+        try:
+            with Image.open(preview_path) as img:
+                w, h = img.size
+                aspect = round(w / h, 4) if h else None
+        except Exception:
+            pass
+
     photo = {
         'filename': filepath.name,
         'path': str(filepath),
         'flash': flash,
         'timestamp': timestamp or '',
         'has_preview': preview_path is not None,
+        'aspect': aspect,
     }
 
     with state_lock:
@@ -245,7 +281,7 @@ def scan_folder(folder: str) -> None:
     files = sorted(Path(folder).iterdir(), key=lambda f: f.stat().st_mtime if f.is_file() else 0)
     targets = [str(f) for f in files if f.is_file() and f.suffix.lower() in IMG_EXTENSIONS]
     with ThreadPoolExecutor() as pool:
-        pool.map(lambda p: process_file(p, skip_stability_check=True), targets)
+        pool.map(functools.partial(process_file, skip_stability_check=True), targets)
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +291,21 @@ def scan_folder(folder: str) -> None:
 @app.route('/')
 def index():
     return send_from_directory('.', 'viewer.html')
+
+
+@app.route('/api/pick-folder')
+def api_pick_folder():
+    result = subprocess.run(
+        ['osascript', '-e', 'choose folder with prompt "Select a folder to watch"'],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        return jsonify({'path': None})
+    raw = result.stdout.strip()
+    # osascript returns an alias like "Macintosh HD:Users:foo:bar:"
+    parts = raw.split(':')
+    path = '/' + '/'.join(p for p in parts[1:] if p)
+    return jsonify({'path': path})
 
 
 @app.route('/api/status')
@@ -305,26 +356,25 @@ def api_series():
 @app.route('/api/preview/<path:filename>')
 def api_preview(filename: str):
     with state_lock:
-        photos = list(state['photos'])
-
-    photo = next((p for p in photos if p['filename'] == filename), None)
+        photo = next((p for p in state['photos'] if p['filename'] == filename), None)
     if not photo:
         return 'Not found', 404
-
-    filepath = Path(photo['path'])
-
-    if filepath.suffix.lower() in JPEG_EXTENSIONS:
-        return send_file(str(filepath), mimetype='image/jpeg')
-
-    cache_path = PREVIEW_CACHE_DIR / (filepath.stem + '_preview.jpg')
-    if cache_path.exists():
-        return send_file(str(cache_path), mimetype='image/jpeg')
-
-    preview = extract_preview(filepath)
+    preview = extract_preview(Path(photo['path']))
     if preview:
         return send_file(str(preview), mimetype='image/jpeg')
-
     return 'Preview not available', 404
+
+
+@app.route('/api/photo/<path:filename>')
+def api_photo(filename: str):
+    with state_lock:
+        photo = next((p for p in state['photos'] if p['filename'] == filename), None)
+    if not photo:
+        return 'Not found', 404
+    full = extract_full(Path(photo['path']))
+    if full:
+        return send_file(str(full), mimetype='image/jpeg')
+    return 'Photo not available', 404
 
 
 @app.route('/api/stream')

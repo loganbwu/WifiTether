@@ -116,13 +116,12 @@ button:hover {
 #gallery {
   display: flex;
   flex-wrap: wrap;
+  align-items: flex-start;
   gap: 10px;
   padding-bottom: 40px;
 }
 
 .tether-card {
-  width: calc((100% - 40px) / 5);
-  min-width: 140px;
   background: var(--dark);
   border: 1px solid var(--border);
   cursor: pointer;
@@ -131,34 +130,17 @@ button:hover {
   position: relative;
 }
 
-@media (max-width: 900px) {
-  .tether-card { width: calc((100% - 20px) / 3); }
-}
-@media (max-width: 560px) {
-  .tether-card { width: calc((100% - 10px) / 2); }
-}
-
 .tether-card:hover { border-color: var(--pale-blue); }
 
 .tether-card__img-wrap {
   width: 100%;
-  height: 130px;
-  overflow: hidden;
-  position: relative;
   background: #0a0a0a;
 }
 
-.tether-card__img-wrap img,
-.tether-card__img-wrap canvas {
-  position: absolute;
-  top: 0; left: 0;
-  width: 100%; height: 100%;
-  object-fit: cover;
+.tether-card__img-wrap img {
+  width: 100%;
+  height: auto;
   display: block;
-}
-
-.tether-card__img-wrap canvas {
-  /* object-fit not supported on canvas; we handle crop in JS */
 }
 
 .tether-card__badge {
@@ -365,6 +347,7 @@ button:hover {
 
 <div id="folder-form">
   <input id="folder-input" type="text" autocomplete="off" spellcheck="false">
+  <button id="browse-btn">Browse</button>
   <button id="watch-btn">Watch</button>
 </div>
 
@@ -473,6 +456,10 @@ button:hover {
     return '/api/preview/' + encodeURIComponent(filename);
   }
 
+  function photoUrl(filename) {
+    return '/api/photo/' + encodeURIComponent(filename);
+  }
+
   // ---------------------------------------------------------------------------
   // Gallery rendering
   // ---------------------------------------------------------------------------
@@ -507,9 +494,54 @@ button:hover {
       gallery.appendChild(card);
     });
 
+    layoutGallery();
+
     if (newNewestEl) {
       newNewestEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
+  }
+
+  var GAP = 10;
+  var TARGET_AREA = 40000;
+
+  function layoutGallery() {
+    var gallery = document.getElementById('gallery');
+    var containerWidth = gallery.clientWidth;
+    if (!containerWidth) return;
+    var cards = Array.from(gallery.children);
+    if (!cards.length) return;
+
+    var naturalWidths = cards.map(function (card) {
+      return Math.sqrt(TARGET_AREA * (parseFloat(card.dataset.aspect) || 1.5));
+    });
+
+    // Greedy row packing
+    var rows = [];
+    var row = [];
+    var rowWidth = 0;
+    cards.forEach(function (card, i) {
+      var w = naturalWidths[i];
+      var needed = rowWidth + (row.length ? GAP : 0) + w;
+      if (row.length && needed > containerWidth) {
+        rows.push(row);
+        row = [i];
+        rowWidth = w;
+      } else {
+        row.push(i);
+        rowWidth = needed;
+      }
+    });
+    if (row.length) rows.push(row);
+
+    // Apply widths — scale full rows to fill container, leave last row natural
+    rows.forEach(function (r, ri) {
+      var isLast = ri === rows.length - 1;
+      var totalNatural = r.reduce(function (s, i) { return s + naturalWidths[i]; }, 0);
+      var scale = isLast ? 1 : (containerWidth - (r.length - 1) * GAP) / totalNatural;
+      r.forEach(function (i) {
+        cards[i].style.width = Math.floor(naturalWidths[i] * scale) + 'px';
+      });
+    });
   }
 
   function createCard(c, s) {
@@ -519,15 +551,19 @@ button:hover {
     card.dataset.filename = c.filename;
     card.dataset.baseFilename = s.base.filename;
     card.dataset.overlayIdx = String(c.overlayIdx);
+    var photo = c.overlayIdx === -1 ? s.base : s.overlays[c.overlayIdx];
+    card.dataset.aspect = String(photo.aspect || 1.5);
 
     var wrap = document.createElement('div');
     wrap.className = 'tether-card__img-wrap';
 
     if (c.overlayIdx === -1) {
-      var badge = document.createElement('div');
-      badge.className = 'tether-card__badge';
-      badge.textContent = 'Flash';
-      wrap.appendChild(badge);
+      if (s.base.flash) {
+        var badge = document.createElement('div');
+        badge.className = 'tether-card__badge';
+        badge.textContent = 'Flash';
+        wrap.appendChild(badge);
+      }
 
       var img = document.createElement('img');
       img.src = previewUrl(c.filename);
@@ -535,11 +571,11 @@ button:hover {
       img.loading = 'lazy';
       wrap.appendChild(img);
     } else {
-      var canvas = document.createElement('canvas');
-      canvas.width = 1;
-      canvas.height = 1;
-      drawCompositeThumb(canvas, s.base.filename, s.overlays[c.overlayIdx].filename);
-      wrap.appendChild(canvas);
+      var img = document.createElement('img');
+      img.src = previewUrl(c.filename);
+      img.alt = c.filename;
+      img.loading = 'lazy';
+      wrap.appendChild(img);
     }
 
     var info = document.createElement('div');
@@ -560,41 +596,6 @@ button:hover {
     });
 
     return card;
-  }
-
-  function drawCompositeThumb(canvas, baseFilename, overlayFilename) {
-    var baseImg = new Image();
-    var ovImg = new Image();
-    var baseLoaded = false, ovLoaded = false;
-
-    function tryDraw() {
-      if (!baseLoaded || !ovLoaded) return;
-      // Draw cover-cropped composite into the canvas
-      var w = canvas.parentElement ? canvas.parentElement.offsetWidth || 200 : 200;
-      var h = 130;
-      canvas.width = w;
-      canvas.height = h;
-      var ctx = canvas.getContext('2d');
-      drawCover(ctx, baseImg, w, h);
-      ctx.globalCompositeOperation = 'screen';
-      drawCover(ctx, ovImg, w, h);
-      ctx.globalCompositeOperation = 'source-over';
-    }
-
-    baseImg.onload = function () { baseLoaded = true; tryDraw(); };
-    ovImg.onload = function () { ovLoaded = true; tryDraw(); };
-    baseImg.src = previewUrl(baseFilename);
-    ovImg.src = previewUrl(overlayFilename);
-  }
-
-  function drawCover(ctx, img, w, h) {
-    if (!img.naturalWidth || !img.naturalHeight) return;
-    var scale = Math.max(w / img.naturalWidth, h / img.naturalHeight);
-    var dw = img.naturalWidth * scale;
-    var dh = img.naturalHeight * scale;
-    var dx = (w - dw) / 2;
-    var dy = (h - dh) / 2;
-    ctx.drawImage(img, dx, dy, dw, dh);
   }
 
   // ---------------------------------------------------------------------------
@@ -763,17 +764,11 @@ button:hover {
   function loadViewerImages(series) {
     var canvas = document.getElementById('viewer-canvas');
     var ctx = canvas.getContext('2d');
-    canvas.width = canvas.width || 400;
-    canvas.height = canvas.height || 300;
-    ctx.fillStyle = '#1a1a1a';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = '#888';
-    ctx.font = '14px Helvetica';
-    ctx.textAlign = 'center';
-    ctx.fillText('Loading...', canvas.width / 2, canvas.height / 2);
+    if (!canvas.width) canvas.width = 400;
+    if (!canvas.height) canvas.height = 300;
 
-    var srcs = [previewUrl(series.base.filename)].concat(
-      series.overlays.map(function (ov) { return previewUrl(ov.filename); })
+    var srcs = [photoUrl(series.base.filename)].concat(
+      series.overlays.map(function (ov) { return photoUrl(ov.filename); })
     );
     var imgs = srcs.map(function () { return new Image(); });
     var loaded = 0;
@@ -862,6 +857,17 @@ button:hover {
   document.getElementById('folder-input').addEventListener('keydown', function (e) {
     if (e.key === 'Enter') watchFolder();
   });
+  document.getElementById('browse-btn').addEventListener('click', function () {
+    fetch('/api/pick-folder')
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data.path) {
+          document.getElementById('folder-input').value = data.path;
+          watchFolder();
+        }
+      })
+      .catch(function (err) { setStatus('warn', 'Error: ' + err.message); });
+  });
 
   function watchFolder() {
     var folder = document.getElementById('folder-input').value.trim();
@@ -910,6 +916,10 @@ button:hover {
     var dateStr = year + '-' + mm + '-' + dd;
     document.getElementById('folder-input').value = '~/Pictures/' + year + '/' + dateStr;
   }());
+
+  // Re-layout on gallery resize (e.g. window resize)
+  new ResizeObserver(function () { layoutGallery(); })
+    .observe(document.getElementById('gallery'));
 
   // Check if server has an active folder already (e.g. after page refresh)
   fetch('/api/status')

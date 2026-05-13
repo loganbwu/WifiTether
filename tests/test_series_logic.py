@@ -58,9 +58,22 @@ def test_consecutive_bases_each_get_their_own_series():
     assert result[1]['overlays'] == []
 
 
-def test_orphaned_overlay_before_any_base_is_ignored():
-    result = compute_series([photo('ov.jpg', False)])
-    assert result == []
+def test_no_flash_photos_each_become_own_base():
+    photos = [photo('a.jpg', False), photo('b.jpg', False)]
+    result = compute_series(photos)
+    assert len(result) == 2
+    assert result[0]['base']['filename'] == 'a.jpg'
+    assert result[0]['overlays'] == []
+    assert result[1]['base']['filename'] == 'b.jpg'
+    assert result[1]['overlays'] == []
+
+
+def test_non_flash_before_first_base_in_mixed_folder_is_ignored():
+    photos = [photo('ov.jpg', False), photo('base.jpg', True)]
+    result = compute_series(photos)
+    assert len(result) == 1
+    assert result[0]['base']['filename'] == 'base.jpg'
+    assert result[0]['overlays'] == []
 
 
 def test_overlay_goes_to_most_recent_base():
