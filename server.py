@@ -205,14 +205,22 @@ def wait_for_file_stable(filepath: Path, timeout: int = 15) -> bool:
 
 
 def compute_series(photos: list) -> list:
+    has_flash = any(not p.get('error') and p['flash'] for p in photos)
+
+    if not has_flash:
+        return [{'base': p, 'overlays': []} for p in photos]
+
     series = []
+    last_flash_entry = None
     for photo in photos:
-        if photo['flash']:
+        if photo.get('error'):
             series.append({'base': photo, 'overlays': []})
-        elif series:
-            series[-1]['overlays'].append(photo)
-    if not series:
-        series = [{'base': photo, 'overlays': []} for photo in photos]
+        elif photo['flash']:
+            entry = {'base': photo, 'overlays': []}
+            series.append(entry)
+            last_flash_entry = entry
+        elif last_flash_entry is not None:
+            last_flash_entry['overlays'].append(photo)
     return series
 
 
@@ -228,9 +236,11 @@ def process_file(filepath_str: str, skip_stability_check: bool = False) -> None:
         return
 
     flash, timestamp = get_exif_info(filepath)
+    error = None
     if flash is None:
-        print(f'Could not read EXIF from {filepath.name}, skipping')
-        return
+        print(f'Could not read EXIF from {filepath.name}, adding as placeholder')
+        flash = False
+        error = 'Could not read EXIF'
 
     preview_path = extract_preview(filepath)
 
@@ -250,6 +260,7 @@ def process_file(filepath_str: str, skip_stability_check: bool = False) -> None:
         'timestamp': timestamp or '',
         'has_preview': preview_path is not None,
         'aspect': aspect,
+        'error': error,
     }
 
     with state_lock:

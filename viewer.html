@@ -157,6 +157,15 @@ button:hover {
   pointer-events: none;
 }
 
+.tether-card__error {
+  padding: 10px 8px;
+  font-size: 0.75em;
+  color: #c0a000;
+  min-height: 60px;
+  display: flex;
+  align-items: center;
+}
+
 .tether-card__info {
   padding: 5px 8px;
   font-size: 0.72em;
@@ -503,6 +512,17 @@ button:hover {
 
   var GAP = 10;
   var TARGET_AREA = 40000;
+  var TARGET_AREA_MIN = 5000;
+  var TARGET_AREA_MAX = 400000;
+
+  document.getElementById('gallery').addEventListener('wheel', function (e) {
+    if (!e.ctrlKey) return;
+    e.preventDefault();
+    TARGET_AREA = Math.min(TARGET_AREA_MAX, Math.max(TARGET_AREA_MIN,
+      TARGET_AREA * Math.pow(1.05, -e.deltaY)
+    ));
+    layoutGallery();
+  }, { passive: false });
 
   function layoutGallery() {
     var gallery = document.getElementById('gallery');
@@ -557,20 +577,18 @@ button:hover {
     var wrap = document.createElement('div');
     wrap.className = 'tether-card__img-wrap';
 
-    if (c.overlayIdx === -1) {
-      if (s.base.flash) {
+    if (photo.error) {
+      var errEl = document.createElement('div');
+      errEl.className = 'tether-card__error';
+      errEl.textContent = photo.error;
+      wrap.appendChild(errEl);
+    } else {
+      if (c.overlayIdx === -1 && s.base.flash) {
         var badge = document.createElement('div');
         badge.className = 'tether-card__badge';
         badge.textContent = 'Flash';
         wrap.appendChild(badge);
       }
-
-      var img = document.createElement('img');
-      img.src = previewUrl(c.filename);
-      img.alt = c.filename;
-      img.loading = 'lazy';
-      wrap.appendChild(img);
-    } else {
       var img = document.createElement('img');
       img.src = previewUrl(c.filename);
       img.alt = c.filename;

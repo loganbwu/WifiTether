@@ -4,8 +4,8 @@ import pytest
 from server import compute_series
 
 
-def photo(filename, flash, timestamp='2026:01:01 10:00:00'):
-    return {'filename': filename, 'path': '', 'flash': flash, 'timestamp': timestamp, 'has_preview': False}
+def photo(filename, flash, timestamp='2026:01:01 10:00:00', error=None):
+    return {'filename': filename, 'path': '', 'flash': flash, 'timestamp': timestamp, 'has_preview': False, 'error': error}
 
 
 def test_empty():
@@ -74,6 +74,31 @@ def test_non_flash_before_first_base_in_mixed_folder_is_ignored():
     assert len(result) == 1
     assert result[0]['base']['filename'] == 'base.jpg'
     assert result[0]['overlays'] == []
+
+
+def test_error_photo_is_standalone():
+    photos = [
+        photo('base.jpg',  True,  '2026:01:01 10:00:00'),
+        photo('bad.dng',   False, '2026:01:01 10:00:01', error='Could not read EXIF'),
+        photo('ov1.jpg',   False, '2026:01:01 10:00:02'),
+    ]
+    result = compute_series(photos)
+    assert len(result) == 2
+    assert result[0]['base']['filename'] == 'base.jpg'
+    assert [o['filename'] for o in result[0]['overlays']] == ['ov1.jpg']
+    assert result[1]['base']['filename'] == 'bad.dng'
+    assert result[1]['overlays'] == []
+
+
+def test_all_error_photos_each_become_own_base():
+    photos = [
+        photo('a.dng', False, error='Could not read EXIF'),
+        photo('b.dng', False, error='Could not read EXIF'),
+    ]
+    result = compute_series(photos)
+    assert len(result) == 2
+    assert result[0]['base']['filename'] == 'a.dng'
+    assert result[1]['base']['filename'] == 'b.dng'
 
 
 def test_overlay_goes_to_most_recent_base():
