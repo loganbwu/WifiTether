@@ -24,7 +24,7 @@ dev-dependencies = [
 ]
 
 [tool.rye.scripts]
-start = { cmd = "python server.py" }
+wifitether = { cmd = "python server.py" }
 test = { cmd = "pytest tests/ -v" }
 
 [tool.pytest.ini_options]

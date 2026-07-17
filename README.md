@@ -9,7 +9,7 @@ A local-only utility for reviewing shots in real time while tethering. As the ca
 **Setup:**
 ```bash
 rye sync
-rye run start
+rye run wifitether
 ```
 
 Open **http://localhost:5001**, enter the shoot folder path (e.g. `~/Pictures/2026/2026-05-07`), and click **Watch**.
