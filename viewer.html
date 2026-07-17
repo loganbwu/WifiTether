@@ -143,9 +143,18 @@ button:hover {
   display: block;
 }
 
-.tether-card__badge {
+.tether-card__badges {
   position: absolute;
   top: 6px; right: 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.tether-card__badge {
   font-family: 'Oswald', sans-serif;
   font-size: 0.65em;
   text-transform: uppercase;
@@ -153,8 +162,6 @@ button:hover {
   background: rgba(0,0,0,0.7);
   color: var(--pale-blue);
   border: 1px solid var(--pale-blue);
-  z-index: 1;
-  pointer-events: none;
 }
 
 .tether-card__error {
@@ -478,13 +485,9 @@ button:hover {
     document.getElementById('photo-count').textContent =
       totalPhotos === 0 ? '' : totalPhotos + ' photo' + (totalPhotos !== 1 ? 's' : '');
 
-    // Build flat card list in timestamp order
-    var cards = [];
-    series.forEach(function (s, si) {
-      cards.push({ seriesIdx: si, overlayIdx: -1, filename: s.base.filename });
-      s.overlays.forEach(function (ov, oi) {
-        cards.push({ seriesIdx: si, overlayIdx: oi, filename: ov.filename });
-      });
+    // Build flat card list, one per series (overlays don't get their own card)
+    var cards = series.map(function (s, si) {
+      return { seriesIdx: si, overlayIdx: -1, filename: s.base.filename };
     });
 
     // Pool existing DOM nodes by filename so we can reuse them in any order
@@ -497,9 +500,13 @@ button:hover {
     var newNewestEl = null;
 
     cards.forEach(function (c) {
-      var card = pool[c.filename] || createCard(c, series[c.seriesIdx]);
-      card.classList.toggle('tether-card--newest', c.filename === newestFilename);
-      if (c.filename === newestFilename) newNewestEl = card;
+      var s = series[c.seriesIdx];
+      var isNewest = s.base.filename === newestFilename ||
+        s.overlays.some(function (ov) { return ov.filename === newestFilename; });
+      var card = pool[c.filename] || createCard(c, s);
+      updateCardOverlays(card, s);
+      card.classList.toggle('tether-card--newest', isNewest);
+      if (isNewest) newNewestEl = card;
       gallery.appendChild(card);
     });
 
@@ -583,14 +590,16 @@ button:hover {
       errEl.textContent = photo.error;
       wrap.appendChild(errEl);
     } else {
+      var badges = document.createElement('div');
+      badges.className = 'tether-card__badges';
+      wrap.appendChild(badges);
       if (c.overlayIdx === -1 && s.base.flash) {
         var badge = document.createElement('div');
         badge.className = 'tether-card__badge';
         badge.textContent = '↯';
-        wrap.appendChild(badge);
+        badges.appendChild(badge);
       }
       var img = document.createElement('img');
-      img.src = previewUrl(c.filename);
       img.alt = c.filename;
       img.loading = 'lazy';
       wrap.appendChild(img);
@@ -614,6 +623,31 @@ button:hover {
     });
 
     return card;
+  }
+
+  // Refresh a card's thumbnail (composited with its overlays server-side) and
+  // count badge when the number of overlays has changed since last render.
+  function updateCardOverlays(card, s) {
+    if (s.base.error) return;
+    var count = s.overlays.length;
+    if (card.dataset.overlayCount === String(count)) return;
+    card.dataset.overlayCount = String(count);
+
+    var badges = card.querySelector('.tether-card__badges');
+    var countBadge = badges.querySelector('.tether-card__badge--count');
+    if (count > 0) {
+      if (!countBadge) {
+        countBadge = document.createElement('div');
+        countBadge.className = 'tether-card__badge tether-card__badge--count';
+        badges.appendChild(countBadge);
+      }
+      countBadge.textContent = '+' + count;
+    } else if (countBadge) {
+      countBadge.remove();
+    }
+
+    var img = card.querySelector('.tether-card__img-wrap img');
+    if (img) img.src = previewUrl(s.base.filename) + '?ov=' + count;
   }
 
   // ---------------------------------------------------------------------------
