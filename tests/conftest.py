@@ -12,8 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from server import app as flask_app
 from server import state, state_lock
 
-_PHOTOS_DIR = Path(__file__).parent.parent.parent / 'frontend' / 'photos'
-_SAMPLE_JPEG = next(_PHOTOS_DIR.glob('*.jpg'))
+_SAMPLE_JPEG = Path(__file__).parent / 'fixtures' / 'sample.jpg'
 
 
 @pytest.fixture(scope='session')
