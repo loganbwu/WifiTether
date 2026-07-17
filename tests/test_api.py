@@ -1,7 +1,7 @@
 """Flask API tests — use the test client so no real server is started."""
 
 import pytest
-from server import process_file
+from server import process_file, state, state_lock
 
 
 # ---------------------------------------------------------------------------
@@ -100,3 +100,68 @@ def test_preview_jpeg_returns_image(client, make_jpeg):
     r = client.get('/api/preview/preview.jpg')
     assert r.status_code == 200
     assert r.content_type.startswith('image/')
+
+
+# ---------------------------------------------------------------------------
+# /api/series?min_rating=
+# ---------------------------------------------------------------------------
+
+def test_series_min_rating_filters_by_base_rating(client, make_jpeg, monkeypatch):
+    ratings = {'low.jpg': 1, 'mid.jpg': 3, 'high.jpg': 5}
+    monkeypatch.setattr('server.get_file_rating', lambda path: ratings.get(path.name))
+
+    for name, ts in [('low.jpg', '2026:01:01 10:00:00'),
+                      ('mid.jpg', '2026:01:01 10:00:01'),
+                      ('high.jpg', '2026:01:01 10:00:02')]:
+        process_file(str(make_jpeg(name, flash=1, timestamp=ts)))
+
+    r = client.get('/api/series?min_rating=3')
+    filenames = [s['base']['filename'] for s in r.get_json()]
+    assert filenames == ['mid.jpg', 'high.jpg']
+
+
+def test_series_min_rating_zero_is_unfiltered(client, make_jpeg, monkeypatch):
+    monkeypatch.setattr('server.get_file_rating', lambda path: None)
+    process_file(str(make_jpeg('unrated.jpg', flash=1, timestamp='2026:01:01 10:00:00')))
+
+    r = client.get('/api/series?min_rating=0')
+    assert len(r.get_json()) == 1
+
+
+def test_series_min_rating_excludes_unrated(client, make_jpeg, monkeypatch):
+    monkeypatch.setattr('server.get_file_rating', lambda path: None)
+    process_file(str(make_jpeg('unrated.jpg', flash=1, timestamp='2026:01:01 10:00:00')))
+
+    r = client.get('/api/series?min_rating=1')
+    assert r.get_json() == []
+
+
+# ---------------------------------------------------------------------------
+# /api/lightroom-catalog
+# ---------------------------------------------------------------------------
+
+def test_lightroom_catalog_rejects_missing_file(client):
+    r = client.post('/api/lightroom-catalog', json={'path': '/nonexistent/Catalog.lrcat'})
+    assert r.status_code == 400
+    assert 'error' in r.get_json()
+
+
+def test_lightroom_catalog_accepts_real_file(client, tmp_path):
+    catalog = tmp_path / 'Catalog.lrcat'
+    catalog.write_bytes(b'')
+    r = client.post('/api/lightroom-catalog', json={'path': str(catalog)})
+    assert r.status_code == 200
+    assert r.get_json()['lightroom_catalog'] == str(catalog)
+
+    with state_lock:
+        assert state['lightroom_catalog'] == str(catalog)
+
+
+def test_lightroom_catalog_empty_path_clears_it(client, tmp_path):
+    catalog = tmp_path / 'Catalog.lrcat'
+    catalog.write_bytes(b'')
+    client.post('/api/lightroom-catalog', json={'path': str(catalog)})
+
+    r = client.post('/api/lightroom-catalog', json={'path': ''})
+    assert r.status_code == 200
+    assert r.get_json()['lightroom_catalog'] is None

@@ -47,11 +47,13 @@ def clean_state():
         state['folder'] = None
         state['photos'] = []
         state['series'] = []
+        state['lightroom_catalog'] = None
     yield
     with state_lock:
         state['folder'] = None
         state['photos'] = []
         state['series'] = []
+        state['lightroom_catalog'] = None
 
 
 @pytest.fixture

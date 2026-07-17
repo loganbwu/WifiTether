@@ -4,7 +4,7 @@ Tethering viewer — local Flask server.
 
 Usage:
     rye sync
-    rye run start
+    rye run wifitether
     # Open http://localhost:5001
 """
 
@@ -13,6 +13,8 @@ import io
 import json
 import os
 import queue
+import re
+import sqlite3
 import struct
 import subprocess
 import threading
@@ -43,7 +45,10 @@ state = {
     'folder': None,
     'photos': [],   # [{filename, path, flash, timestamp}] sorted by timestamp
     'series': [],   # [{base: photo, overlays: [photo, ...]}]
+    'lightroom_catalog': None,   # path to a .lrcat, or None
 }
+
+LIGHTROOM_POLL_INTERVAL_SEC = 5
 
 sse_clients: list[queue.Queue] = []
 sse_lock = threading.Lock()
@@ -143,6 +148,78 @@ def get_exif_info(filepath: Path) -> tuple[bool | None, str | None]:
     except Exception as e:
         print(f'EXIF error for {filepath.name}: {e}')
     return None, None
+
+
+# xmp:Rating can appear as either an attribute (xmp:Rating="3") or an
+# element (<xmp:Rating>3</xmp:Rating>) — Adobe products use -1 for "rejected".
+_XMP_RATING_RE = re.compile(rb'xmp:Rating(?:\s*=\s*"(-?\d+)"|>(-?\d+)<)')
+
+
+def _rating_from_xmp_bytes(data: bytes) -> int | None:
+    """Find an xmp:Rating value anywhere in a blob that may embed an XMP packet."""
+    match = _XMP_RATING_RE.search(data)
+    if not match:
+        return None
+    return int(match.group(1) or match.group(2))
+
+
+def get_file_rating(filepath: Path) -> int | None:
+    """Return a photo's star rating, checking a sidecar .xmp first, then XMP
+    embedded in the file itself. Returns None if neither has a rating."""
+    sidecar = filepath.with_suffix('.xmp')
+    if sidecar.exists():
+        try:
+            rating = _rating_from_xmp_bytes(sidecar.read_bytes())
+            if rating is not None:
+                return rating
+        except Exception as e:
+            print(f'Sidecar XMP error for {sidecar.name}: {e}')
+    try:
+        return _rating_from_xmp_bytes(filepath.read_bytes())
+    except Exception as e:
+        print(f'Embedded XMP error for {filepath.name}: {e}')
+        return None
+
+
+def query_lightroom_ratings(catalog_path: str, filenames: list) -> dict:
+    """Batch-lookup star ratings from a Lightroom catalog for the given filenames.
+
+    The Adobe_images/AgLibraryFile schema is unofficial and reverse-engineered,
+    so any failure here (locked file, unexpected schema, missing catalog) is
+    swallowed and reported as 'nothing found' — callers fall back to file-based
+    ratings rather than breaking the scan.
+    """
+    if not filenames:
+        return {}
+    lower_to_name = {f.lower(): f for f in filenames}
+    placeholders = ','.join('?' * len(lower_to_name))
+    query = f"""
+        SELECT LOWER(f.baseName || '.' || f.extension) AS fname, i.rating
+        FROM Adobe_images i
+        JOIN AgLibraryFile f ON f.id_local = i.rootFile
+        WHERE LOWER(f.baseName || '.' || f.extension) IN ({placeholders})
+    """
+    try:
+        with sqlite3.connect(f'file:{catalog_path}?mode=ro', uri=True, timeout=2) as conn:
+            rows = conn.execute(query, list(lower_to_name)).fetchall()
+    except Exception as e:
+        print(f'Lightroom catalog read error: {e}')
+        return {}
+    return {
+        lower_to_name[fname]: int(rating)
+        for fname, rating in rows
+        if rating is not None and fname in lower_to_name
+    }
+
+
+def get_rating(filepath: Path, catalog_path: str | None) -> int | None:
+    """Resolve a photo's rating: Lightroom catalog first (if configured), then
+    sidecar/embedded XMP as a fallback."""
+    if catalog_path:
+        catalog_rating = query_lightroom_ratings(catalog_path, [filepath.name]).get(filepath.name)
+        if catalog_rating is not None:
+            return catalog_rating
+    return get_file_rating(filepath)
 
 
 def _open_rotated(filepath: Path) -> Image.Image | None:
@@ -283,6 +360,10 @@ def process_file(filepath_str: str, skip_stability_check: bool = False) -> None:
         except Exception:
             pass
 
+    with state_lock:
+        catalog = state['lightroom_catalog']
+    rating = get_rating(filepath, catalog)
+
     photo = {
         'filename': filepath.name,
         'path': str(filepath),
@@ -291,6 +372,7 @@ def process_file(filepath_str: str, skip_stability_check: bool = False) -> None:
         'has_preview': preview_path is not None,
         'aspect': aspect,
         'error': error,
+        'rating': rating,
     }
 
     with state_lock:
@@ -301,13 +383,93 @@ def process_file(filepath_str: str, skip_stability_check: bool = False) -> None:
         state['series'] = compute_series(state['photos'])
 
     notify_clients({'type': 'update', 'filename': filepath.name})
-    print(f'Added: {filepath.name}  flash={flash}  ts={timestamp}')
+    print(f'Added: {filepath.name}  flash={flash}  ts={timestamp}  rating={rating}')
+
+
+def refresh_rating(filename: str) -> None:
+    """Re-derive a single already-tracked photo's rating (e.g. metadata was
+    written after the photo was first scanned) and notify clients if it changed."""
+    with state_lock:
+        photo = next((p for p in state['photos'] if p['filename'] == filename), None)
+        catalog = state['lightroom_catalog']
+    if not photo:
+        return
+
+    rating = get_rating(Path(photo['path']), catalog)
+
+    with state_lock:
+        if photo['rating'] == rating:
+            return
+        photo['rating'] = rating
+        state['series'] = compute_series(state['photos'])
+
+    notify_clients({'type': 'ratings_updated'})
+    print(f'Rating updated: {filename} -> {rating}')
+
+
+def handle_modified(filepath_str: str) -> None:
+    """React to a sidecar .xmp being written, or a photo file itself being
+    rewritten with new metadata (e.g. Lightroom's 'Save Metadata to File')."""
+    filepath = Path(filepath_str)
+    if not filepath.is_file():
+        return
+
+    with state_lock:
+        known_filenames = {p['filename'] for p in state['photos']}
+
+    if filepath.suffix.lower() == '.xmp':
+        matched = next((name for name in known_filenames if Path(name).stem == filepath.stem), None)
+    elif filepath.name in known_filenames:
+        matched = filepath.name
+    else:
+        matched = None
+
+    if matched:
+        wait_for_file_stable(filepath, timeout=5)
+        refresh_rating(matched)
+
+
+def lightroom_poll_loop() -> None:
+    """Periodically re-check the Lightroom catalog for rating changes.
+
+    Filesystem events aren't reliable for the catalog itself (in WAL mode the
+    main .lrcat file's mtime may not change until a checkpoint), so this polls
+    instead of watching.
+    """
+    while True:
+        time.sleep(LIGHTROOM_POLL_INTERVAL_SEC)
+        with state_lock:
+            catalog = state['lightroom_catalog']
+            filenames = [p['filename'] for p in state['photos']]
+        if not catalog or not filenames:
+            continue
+
+        ratings = query_lightroom_ratings(catalog, filenames)
+        changed = False
+        with state_lock:
+            for photo in state['photos']:
+                new_rating = ratings.get(photo['filename'])
+                if new_rating is not None and photo['rating'] != new_rating:
+                    photo['rating'] = new_rating
+                    changed = True
+            if changed:
+                state['series'] = compute_series(state['photos'])
+        if changed:
+            notify_clients({'type': 'ratings_updated'})
 
 
 class FolderHandler(FileSystemEventHandler):
     def on_created(self, event):
-        if not event.is_directory:
+        if event.is_directory:
+            return
+        if Path(event.src_path).suffix.lower() == '.xmp':
+            threading.Thread(target=handle_modified, args=(event.src_path,), daemon=True).start()
+        else:
             threading.Thread(target=process_file, args=(event.src_path,), daemon=True).start()
+
+    def on_modified(self, event):
+        if not event.is_directory:
+            threading.Thread(target=handle_modified, args=(event.src_path,), daemon=True).start()
 
 
 def notify_clients(event: dict) -> None:
@@ -323,6 +485,9 @@ def scan_folder(folder: str) -> None:
     targets = [str(f) for f in files if f.is_file() and f.suffix.lower() in IMG_EXTENSIONS]
     with ThreadPoolExecutor() as pool:
         pool.map(functools.partial(process_file, skip_stability_check=True), targets)
+
+
+threading.Thread(target=lightroom_poll_loop, daemon=True).start()
 
 
 # ---------------------------------------------------------------------------
@@ -354,10 +519,25 @@ def api_status():
     with state_lock:
         folder = state['folder']
         photo_count = len(state['photos'])
+        lightroom_catalog = state['lightroom_catalog']
     return jsonify({
         'folder': folder,
         'photo_count': photo_count,
+        'lightroom_catalog': lightroom_catalog,
     })
+
+
+@app.route('/api/lightroom-catalog', methods=['POST'])
+def api_lightroom_catalog():
+    data = request.get_json(force=True)
+    path = os.path.expanduser((data.get('path') or '').strip())
+
+    if path and not os.path.isfile(path):
+        return jsonify({'error': f'Not a file: {path}'}), 400
+
+    with state_lock:
+        state['lightroom_catalog'] = path or None
+    return jsonify({'ok': True, 'lightroom_catalog': state['lightroom_catalog']})
 
 
 @app.route('/api/watch', methods=['POST'])
@@ -390,8 +570,12 @@ def api_watch():
 
 @app.route('/api/series')
 def api_series():
+    min_rating = request.args.get('min_rating', type=int)
     with state_lock:
-        return jsonify(state['series'])
+        series = state['series']
+        if min_rating:
+            series = [s for s in series if (s['base'].get('rating') or 0) >= min_rating]
+        return jsonify(series)
 
 
 @app.route('/api/preview/<path:filename>')

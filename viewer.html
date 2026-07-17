@@ -112,6 +112,69 @@ button:hover {
   text-transform: uppercase;
 }
 
+#lightroom-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+#lightroom-form label {
+  font-size: 0.75em;
+  color: var(--grey);
+  font-family: 'Oswald', sans-serif;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+#lightroom-input {
+  flex: 1;
+  min-width: 200px;
+  padding: 8px 10px;
+  border: 1px solid var(--mid);
+  background: var(--black);
+  color: var(--white);
+  font-family: Helvetica, sans-serif;
+  font-size: 0.85em;
+}
+
+#lightroom-input:focus { outline: 1px solid var(--pale-blue); }
+
+#lightroom-form button {
+  padding: 8px 16px;
+  font-size: 0.85em;
+}
+
+#rating-filter {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-bottom: 16px;
+}
+
+.rating-star {
+  background: none;
+  border: none;
+  color: var(--mid);
+  font-size: 1.4em;
+  line-height: 1;
+  padding: 2px 3px;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.rating-star:hover { color: var(--pale-blue); }
+.rating-star.active { color: var(--pale-blue); }
+
+#rating-filter-label {
+  font-size: 0.75em;
+  color: var(--grey);
+  font-family: 'Oswald', sans-serif;
+  text-transform: uppercase;
+  margin-left: 6px;
+}
+
 /* Gallery */
 #gallery {
   display: flex;
@@ -367,6 +430,14 @@ button:hover {
   <button id="watch-btn">Watch</button>
 </div>
 
+<div id="lightroom-form">
+  <label for="lightroom-input">Lightroom catalog (optional)</label>
+  <input id="lightroom-input" type="text" autocomplete="off" spellcheck="false" placeholder="~/Pictures/Lightroom/Catalog.lrcat">
+  <button id="lightroom-btn">Set</button>
+</div>
+
+<div id="rating-filter" role="group" aria-label="Filter by minimum star rating"></div>
+
 <div id="photo-count"></div>
 <div id="gallery"></div>
 
@@ -409,6 +480,7 @@ button:hover {
   // Gallery state
   var currentSeries = [];      // last-fetched series array
   var newestFilename = null;   // filename of last-added photo
+  var minRating = 0;           // 0 = no filter
 
   // ---------------------------------------------------------------------------
   // SSE connection
@@ -434,6 +506,8 @@ button:hover {
       } else if (msg.type === 'update') {
         newestFilename = msg.filename;
         fetchAndRender();
+      } else if (msg.type === 'ratings_updated') {
+        fetchAndRender(true);
       }
     };
 
@@ -452,15 +526,16 @@ button:hover {
   // API helpers
   // ---------------------------------------------------------------------------
   var fetchTimer = null;
-  function fetchAndRender() {
+  function fetchAndRender(skipJump) {
     clearTimeout(fetchTimer);
     fetchTimer = setTimeout(function () {
-      fetch('/api/series')
+      var url = '/api/series' + (minRating > 0 ? '?min_rating=' + minRating : '');
+      fetch(url)
         .then(function (r) { return r.json(); })
         .then(function (series) {
           currentSeries = series;
           renderGallery(series);
-          if (viewerOpen && newestFilename) {
+          if (!skipJump && viewerOpen && newestFilename) {
             jumpToNewest(series);
           }
         })
@@ -941,6 +1016,53 @@ button:hover {
   }
 
   // ---------------------------------------------------------------------------
+  // Lightroom catalog form
+  // ---------------------------------------------------------------------------
+  document.getElementById('lightroom-btn').addEventListener('click', setLightroomCatalog);
+  document.getElementById('lightroom-input').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') setLightroomCatalog();
+  });
+
+  function setLightroomCatalog() {
+    var path = document.getElementById('lightroom-input').value.trim();
+    fetch('/api/lightroom-catalog', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: path }),
+    })
+      .then(function (r) { return r.json(); })
+      .catch(function (err) { console.error('set lightroom catalog:', err); });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Star rating filter
+  // ---------------------------------------------------------------------------
+  function renderRatingFilter() {
+    var container = document.getElementById('rating-filter');
+    container.innerHTML = '';
+    for (var n = 1; n <= 5; n++) {
+      var star = document.createElement('button');
+      star.type = 'button';
+      star.className = 'rating-star' + (n <= minRating ? ' active' : '');
+      star.textContent = '★';
+      star.setAttribute('aria-label', n + ' star' + (n > 1 ? 's' : '') + ' and up');
+      star.dataset.value = String(n);
+      star.addEventListener('click', function () {
+        var value = parseInt(this.dataset.value, 10);
+        minRating = (minRating === value) ? 0 : value;
+        renderRatingFilter();
+        fetchAndRender(true);
+      });
+      container.appendChild(star);
+    }
+    var label = document.createElement('span');
+    label.id = 'rating-filter-label';
+    label.textContent = minRating > 0 ? (minRating + '+ stars') : 'All photos';
+    container.appendChild(label);
+  }
+  renderRatingFilter();
+
+  // ---------------------------------------------------------------------------
   // Viewer close
   // ---------------------------------------------------------------------------
   document.getElementById('viewer-close').addEventListener('click', closeViewer);
@@ -980,6 +1102,9 @@ button:hover {
       if (s.folder) {
         document.getElementById('folder-input').value = s.folder;
         fetchAndRender();
+      }
+      if (s.lightroom_catalog) {
+        document.getElementById('lightroom-input').value = s.lightroom_catalog;
       }
     })
     .catch(function () {});
