@@ -473,7 +473,9 @@ button:hover {
   var viewerSeries = null;     // currently open series object
   var viewerBaseImg = null;
   var viewerOverlayImgs = [];
+  var viewerLoadGen = 0;       // incremented per loadViewerImages call; stale loads check against this
   var viewerSettings = [];     // [{enabled, hovering, suppressComparing, currentAlpha, targetAlpha}]
+  var viewerLastFocused = null; // element to restore focus to when the viewer closes
   var animFrameId = null;
   var lastTimestamp = null;
 
@@ -526,13 +528,16 @@ button:hover {
   // API helpers
   // ---------------------------------------------------------------------------
   var fetchTimer = null;
+  var fetchSeq = 0;   // guards against an older in-flight request resolving after a newer one
   function fetchAndRender(skipJump) {
     clearTimeout(fetchTimer);
     fetchTimer = setTimeout(function () {
+      var mySeq = ++fetchSeq;
       var url = '/api/series' + (minRating > 0 ? '?min_rating=' + minRating : '');
       fetch(url)
         .then(function (r) { return r.json(); })
         .then(function (series) {
+          if (mySeq !== fetchSeq) return;   // a newer request has already resolved; discard
           currentSeries = series;
           renderGallery(series);
           if (!skipJump && viewerOpen && newestFilename) {
@@ -646,10 +651,17 @@ button:hover {
     });
   }
 
+  function cardAriaLabel(s) {
+    var count = s.overlays.length;
+    return s.base.filename + (count > 0 ? ', ' + count + ' overlay' + (count !== 1 ? 's' : '') : '');
+  }
+
   function createCard(c, s) {
     var card = document.createElement('div');
     card.className = 'tether-card';
     card.setAttribute('tabindex', '0');
+    card.setAttribute('role', 'button');
+    card.setAttribute('aria-label', cardAriaLabel(s));
     card.dataset.filename = c.filename;
     card.dataset.baseFilename = s.base.filename;
     card.dataset.overlayIdx = String(c.overlayIdx);
@@ -709,6 +721,7 @@ button:hover {
     var version = count + ':' + s.base.mtime;
     if (card.dataset.version === version) return;
     card.dataset.version = version;
+    card.setAttribute('aria-label', cardAriaLabel(s));
 
     var badges = card.querySelector('.tether-card__badges');
     var countBadge = badges.querySelector('.tether-card__badge--count');
@@ -731,6 +744,9 @@ button:hover {
   // Viewer
   // ---------------------------------------------------------------------------
   function openViewer(series, overlayIdx, enableAll) {
+    if (!viewerOpen) {
+      viewerLastFocused = document.activeElement;
+    }
     viewerOpen = true;
     viewerSeries = series;
     viewerBaseImg = null;
@@ -752,6 +768,13 @@ button:hover {
 
     renderViewerControls(series);
     loadViewerImages(series);
+    // Deferred: moving focus synchronously here (e.g. while still inside the
+    // keydown handler for Enter/Space on the triggering card) can cause the
+    // browser's native "Enter activates the focused button" behaviour to
+    // immediately fire on the close button, closing the viewer it just opened.
+    setTimeout(function () {
+      document.getElementById('viewer-close').focus();
+    }, 0);
   }
 
   function closeViewer() {
@@ -759,9 +782,14 @@ button:hover {
     viewerSeries = null;
     viewerBaseImg = null;
     viewerOverlayImgs = [];
+    viewerLoadGen++;   // discard any in-flight image loads from the closed series
     if (animFrameId) { cancelAnimationFrame(animFrameId); animFrameId = null; }
     document.getElementById('viewer-modal').style.display = 'none';
     document.body.style.overflow = '';
+    if (viewerLastFocused && typeof viewerLastFocused.focus === 'function') {
+      viewerLastFocused.focus();
+    }
+    viewerLastFocused = null;
   }
 
   function navigateSeries(delta) {
@@ -837,6 +865,7 @@ button:hover {
     series.overlays.forEach(function (ov, i) {
       var btn = document.createElement('button');
       btn.className = 'overlay-btn' + (viewerSettings[i].enabled ? ' active' : '');
+      btn.setAttribute('aria-pressed', String(viewerSettings[i].enabled));
       btn.textContent = ov.filename;
       btn.title = ov.filename;
       btns.push(btn);
@@ -858,6 +887,7 @@ button:hover {
         btn.addEventListener('click', function () {
           viewerSettings[idx].enabled = !viewerSettings[idx].enabled;
           btn.classList.toggle('active', viewerSettings[idx].enabled);
+          btn.setAttribute('aria-pressed', String(viewerSettings[idx].enabled));
           if (viewerSettings[idx].enabled) viewerSettings[idx].suppressComparing = true;
           btn.classList.remove('comparing');
           updateSelectAllBtn(selectAllBtn);
@@ -876,6 +906,7 @@ button:hover {
         s.suppressComparing = enable;
         s.hovering = false;
         btns[i].classList.toggle('active', enable);
+        btns[i].setAttribute('aria-pressed', String(enable));
         btns[i].classList.remove('comparing');
         setTargetAlpha(i);
       });
@@ -891,8 +922,8 @@ button:hover {
   }
 
   function loadViewerImages(series) {
+    var myGen = ++viewerLoadGen;
     var canvas = document.getElementById('viewer-canvas');
-    var ctx = canvas.getContext('2d');
     if (!canvas.width) canvas.width = 400;
     if (!canvas.height) canvas.height = 300;
 
@@ -904,6 +935,7 @@ button:hover {
 
     imgs.forEach(function (img, idx) {
       function onLoad() {
+        if (myGen !== viewerLoadGen) return;   // a newer series has since been opened; discard
         loaded++;
         if (idx === 0) {
           canvas.width = img.naturalWidth || 800;
