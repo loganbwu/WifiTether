@@ -725,12 +725,23 @@ button:hover {
 
   // Screen-blends the base with its overlays on a canvas, client-side — same
   // technique the full-size viewer already uses for live overlay toggling,
-  // just applied once per card instead of interactively. A series with more
-  // overlays than MAX_ACTIVE_OVERLAYS continuously rotates through a random
-  // subset instead of showing (and loading) all of them at once.
+  // just applied once per card instead of interactively. Whenever a series
+  // has more overlays than are shown at once, the shown subset continuously
+  // rotates through the rest at random instead of just showing everything.
+  //
+  // How many overlays are shown at once (n = total overlay count):
+  //   n=0   -> 0 (just the base)
+  //   n=1   -> 1, permanently (nothing to rotate in)
+  //   n=2-3 -> n-1 (always one fewer than the total, rotating)
+  //   n>=4  -> MAX_ACTIVE_OVERLAYS (3), rotating
   var MAX_ACTIVE_OVERLAYS = 3;
-  var CARD_ROTATION_MS = 3000;
+  var CARD_ROTATION_MS = 1000;
   var cardAnimations = new Map();   // canvas -> rotation state, driven by tickCardAnimations
+
+  function activeOverlayCount(n) {
+    if (n === 0) return 0;
+    return Math.max(1, Math.min(n - 1, MAX_ACTIVE_OVERLAYS));
+  }
 
   function renderCardThumbnail(canvas, s) {
     var myGen = (canvas._thumbGen = (canvas._thumbGen || 0) + 1);
@@ -748,8 +759,9 @@ button:hover {
       canvas.width = base.naturalWidth;
       canvas.height = base.naturalHeight;
 
-      if (s.overlays.length > MAX_ACTIVE_OVERLAYS) {
-        startCardRotation(canvas, imgs);
+      var activeCount = activeOverlayCount(s.overlays.length);
+      if (activeCount > 0 && activeCount < s.overlays.length) {
+        startCardRotation(canvas, imgs, activeCount);
       } else {
         drawStaticComposite(canvas, imgs);
       }
@@ -775,9 +787,9 @@ button:hover {
   }
 
   // imgs[0] is the base; imgs[1..] correspond 1:1 with the series' overlays.
-  function startCardRotation(canvas, imgs) {
+  function startCardRotation(canvas, imgs, activeCount) {
     var activeIndices = [];
-    for (var i = 1; i < Math.min(imgs.length, 1 + MAX_ACTIVE_OVERLAYS); i++) activeIndices.push(i);
+    for (var i = 1; i < Math.min(imgs.length, 1 + activeCount); i++) activeIndices.push(i);
     var state = { imgs: imgs, activeIndices: activeIndices, transition: null };
     beginNextCardTransition(state);
     cardAnimations.set(canvas, state);
