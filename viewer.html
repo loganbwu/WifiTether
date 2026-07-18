@@ -737,8 +737,9 @@ button:hover {
   // rotates through the rest at random instead of just showing everything.
   //
   // How many overlays are shown at once (n = total overlay count):
-  //   n=0   -> 0 (just the base)
-  //   n=1   -> 1, permanently (nothing to rotate in)
+  //   n=0   -> 0 (just the base, static)
+  //   n=1   -> 1, permanently, but pulsing 100%<->50% opacity (nothing to
+  //            rotate in, so a static full-opacity overlay looked inert)
   //   n=2-3 -> n-1 (always one fewer than the total, rotating)
   //   n>=4  -> MAX_ACTIVE_OVERLAYS (3), rotating
   var MAX_ACTIVE_OVERLAYS = 3;
@@ -760,7 +761,7 @@ button:hover {
     });
   }, { rootMargin: '200px' });
 
-  function stopCardRotation(canvas) {
+  function stopCardAnimation(canvas) {
     if (cardAnimations.delete(canvas)) {
       cardVisibilityObserver.unobserve(canvas);
       visibleCanvases.delete(canvas);
@@ -774,7 +775,7 @@ button:hover {
 
   function renderCardThumbnail(canvas, s) {
     var myGen = (canvas._thumbGen = (canvas._thumbGen || 0) + 1);
-    stopCardRotation(canvas);   // stop any prior rotation before rebuilding
+    stopCardAnimation(canvas);   // stop any prior rotation before rebuilding
 
     var photos = [s.base].concat(s.overlays);
     var srcs = photos.map(function (p) { return previewUrl(p.filename) + '?v=' + encodeURIComponent(p.mtime); });
@@ -787,9 +788,13 @@ button:hover {
       if (!base.complete || !base.naturalWidth) return;
       canvas._imgs = imgs;
 
-      var activeCount = activeOverlayCount(s.overlays.length);
-      if (activeCount > 0 && activeCount < s.overlays.length) {
-        startCardRotation(canvas, imgs, activeCount);
+      if (s.overlays.length === 1) {
+        startCardPulse(canvas, imgs);
+      } else {
+        var activeCount = activeOverlayCount(s.overlays.length);
+        if (activeCount > 0 && activeCount < s.overlays.length) {
+          startCardRotation(canvas, imgs, activeCount);
+        }
       }
       resizeCardCanvas(canvas);   // sets canvas.width/height to the card's actual displayed size and paints it
     }
@@ -831,7 +836,10 @@ button:hover {
     canvas.height = targetHeight;
 
     var state = cardAnimations.get(canvas);
-    if (state) {
+    if (state && state.kind === 'pulse') {
+      var elapsed = state.startTime === null ? 0 : performance.now() - state.startTime;
+      drawPulsingCard(canvas, state, elapsed);
+    } else if (state) {
       var progress = 0;
       if (state.transition && state.transition.startTime !== null) {
         progress = Math.min(1, (performance.now() - state.transition.startTime) / CARD_ROTATION_MS);
@@ -858,10 +866,41 @@ button:hover {
   function startCardRotation(canvas, imgs, activeCount) {
     var activeIndices = [];
     for (var i = 1; i < Math.min(imgs.length, 1 + activeCount); i++) activeIndices.push(i);
-    var state = { imgs: imgs, activeIndices: activeIndices, transition: null };
+    var state = { kind: 'rotate', imgs: imgs, activeIndices: activeIndices, transition: null };
     beginNextCardTransition(state);
     cardAnimations.set(canvas, state);
     cardVisibilityObserver.observe(canvas);
+  }
+
+  // A single overlay never has anything to rotate in, so instead of sitting
+  // at a static 100% (which reads as inert), it continuously breathes between
+  // 100% and 50% opacity to signal there's a composited layer at all.
+  var PULSE_PERIOD_MS = CARD_ROTATION_MS;
+  var PULSE_MIN_ALPHA = 0.5;
+
+  function startCardPulse(canvas, imgs) {
+    var state = { kind: 'pulse', imgs: imgs, startTime: null };
+    cardAnimations.set(canvas, state);
+    cardVisibilityObserver.observe(canvas);
+  }
+
+  function drawPulsingCard(canvas, state, elapsed) {
+    var phase = (elapsed % PULSE_PERIOD_MS) / PULSE_PERIOD_MS;   // 0..1 over one full cycle
+    var mid = (1 + PULSE_MIN_ALPHA) / 2;
+    var amp = (1 - PULSE_MIN_ALPHA) / 2;
+    var alpha = mid + amp * Math.cos(phase * 2 * Math.PI);       // 1 -> PULSE_MIN_ALPHA -> 1
+
+    var ctx = canvas.getContext('2d');
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.drawImage(state.imgs[0], 0, 0, canvas.width, canvas.height);
+    var overlay = state.imgs[1];
+    if (overlay.complete && overlay.naturalWidth) {
+      ctx.globalCompositeOperation = 'screen';
+      ctx.globalAlpha = alpha;
+      ctx.drawImage(overlay, 0, 0, canvas.width, canvas.height);
+    }
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
   }
 
   function beginNextCardTransition(state) {
@@ -939,7 +978,14 @@ button:hover {
     if (shouldDraw) lastCardDrawTime = timestamp;
 
     cardAnimations.forEach(function (state, canvas) {
-      if (!canvas.isConnected) { stopCardRotation(canvas); return; }
+      if (!canvas.isConnected) { stopCardAnimation(canvas); return; }
+
+      if (state.kind === 'pulse') {
+        if (state.startTime === null) state.startTime = timestamp;
+        if (shouldDraw && visibleCanvases.has(canvas)) drawPulsingCard(canvas, state, timestamp - state.startTime);
+        return;
+      }
+
       if (!state.transition) return;
       if (state.transition.startTime === null) state.transition.startTime = timestamp;
       var progress = Math.min(1, (timestamp - state.transition.startTime) / CARD_ROTATION_MS);
