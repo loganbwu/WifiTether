@@ -476,6 +476,7 @@ button:hover {
   var viewerLoadGen = 0;       // incremented per loadViewerImages call; stale loads check against this
   var viewerSettings = [];     // [{enabled, hovering, suppressComparing, currentAlpha, targetAlpha}]
   var viewerLastFocused = null; // element to restore focus to when the viewer closes
+  var viewerZoom = 1;          // pinch/ctrl+wheel zoom level applied to #viewer-canvas
   var animFrameId = null;
   var lastTimestamp = null;
 
@@ -605,8 +606,9 @@ button:hover {
   // Listen on the whole document, not just #gallery, so a pinch gesture
   // resizes thumbnails regardless of where the cursor happens to be —
   // otherwise the browser's native page-zoom kicks in outside the gallery.
+  // Skipped while the viewer modal is open, which handles its own zoom below.
   document.addEventListener('wheel', function (e) {
-    if (!e.ctrlKey) return;
+    if (!e.ctrlKey || viewerOpen) return;
     e.preventDefault();
     TARGET_AREA = Math.min(TARGET_AREA_MAX, Math.max(TARGET_AREA_MIN,
       TARGET_AREA * Math.pow(1.05, -e.deltaY)
@@ -754,6 +756,7 @@ button:hover {
     viewerSeries = series;
     viewerBaseImg = null;
     viewerOverlayImgs = [];
+    setViewerZoom(1);
     viewerSettings = series.overlays.map(function (_, i) {
       var on = enableAll ? true : (i === overlayIdx);
       return {
@@ -1013,6 +1016,21 @@ button:hover {
     ctx.globalAlpha = 1;
     ctx.globalCompositeOperation = 'source-over';
   }
+
+  var VIEWER_ZOOM_MIN = 1;
+  var VIEWER_ZOOM_MAX = 8;
+
+  function setViewerZoom(zoom) {
+    viewerZoom = Math.min(VIEWER_ZOOM_MAX, Math.max(VIEWER_ZOOM_MIN, zoom));
+    document.getElementById('viewer-canvas').style.transform = 'scale(' + viewerZoom + ')';
+  }
+
+  // Pinch/ctrl+wheel zooms the image itself rather than the browser page.
+  document.addEventListener('wheel', function (e) {
+    if (!e.ctrlKey || !viewerOpen) return;
+    e.preventDefault();
+    setViewerZoom(viewerZoom * Math.pow(1.05, -e.deltaY));
+  }, { passive: false });
 
   // ---------------------------------------------------------------------------
   // Folder watch form
