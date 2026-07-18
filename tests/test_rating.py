@@ -136,6 +136,14 @@ def test_catalog_unexpected_schema_returns_empty_dict(tmp_path):
     assert result == {}
 
 
+def test_catalog_lookup_matches_subfolder_prefixed_filename(lrcat):
+    # Lightroom's own schema only ever stores a bare basename -- a filename
+    # carrying a subfolder prefix (as ours do once inside a watched folder)
+    # must still match by basename, keyed by the original prefixed name.
+    result = query_lightroom_ratings(lrcat, ['session1/IMG_0001.CR3'])
+    assert result == {'session1/IMG_0001.CR3': 4}
+
+
 # ---------------------------------------------------------------------------
 # _lightroom_poll_once — the poll loop's own per-iteration logic
 # ---------------------------------------------------------------------------
@@ -178,6 +186,18 @@ def test_lightroom_poll_once_noop_when_rating_already_matches(clean_state, lrcat
 
     _lightroom_poll_once()
     assert sse_queue.empty()
+
+
+def test_lightroom_poll_once_updates_rating_for_subfolder_photo(clean_state, lrcat, sse_queue):
+    with state_lock:
+        state['lightroom_catalog'] = lrcat
+        state['photos'] = [_tracked_photo('session1/IMG_0001.CR3', rating=1)]
+        state['series'] = compute_series(state['photos'])
+
+    _lightroom_poll_once()
+
+    assert state['photos'][0]['rating'] == 4
+    assert not sse_queue.empty()
 
 
 def test_empty_filenames_short_circuits(lrcat):
@@ -352,6 +372,18 @@ def test_handle_modified_ignores_untracked_file(clean_state, tmp_path):
     untracked.write_bytes(b'not tracked')
     handle_modified(str(untracked))   # should not raise
     assert state['photos'] == []
+
+
+def test_handle_modified_skips_refresh_when_file_never_stabilises(clean_state, make_jpeg, monkeypatch):
+    path = make_jpeg('photo.jpg', flash=1, timestamp='2026:01:01 10:00:00')
+    process_file(str(path))
+
+    calls = []
+    monkeypatch.setattr('server.wait_for_file_stable', lambda *a, **kw: False)
+    monkeypatch.setattr('server.refresh_metadata', lambda *a, **kw: calls.append(a))
+    handle_modified(str(path))
+
+    assert calls == []
 
 
 # ---------------------------------------------------------------------------

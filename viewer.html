@@ -606,7 +606,14 @@ button:hover {
       var s = series[c.seriesIdx];
       var isNewest = s.base.filename === newestFilename ||
         s.overlays.some(function (ov) { return ov.filename === newestFilename; });
-      var card = pool[c.filename] || createCard(c, s);
+      var card = pool[c.filename];
+      // A pooled card's DOM shape (error placeholder vs. canvas+badges) was
+      // fixed at creation time -- if error status flipped since then, discard
+      // and rebuild fresh rather than reusing a mismatched structure.
+      if (card && !!card.querySelector('.tether-card__error') !== !!s.base.error) {
+        card = null;
+      }
+      card = card || createCard(c, s);
       updateCardOverlays(card, s);
       card.classList.toggle('tether-card--newest', isNewest);
       if (isNewest) newNewestEl = card;

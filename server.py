@@ -225,11 +225,21 @@ def query_lightroom_ratings(catalog_path: str, filenames: list) -> dict:
     so any failure here (locked file, unexpected schema, missing catalog) is
     swallowed and reported as 'nothing found' — callers fall back to file-based
     ratings rather than breaking the scan.
+
+    Lightroom's schema only stores each file's bare basename (no folder path),
+    while our own filenames may carry a subfolder prefix (e.g.
+    "session1/IMG_0001.CR3") -- match on the basename but key the returned
+    dict by the original filename, so callers can look up by the identity
+    they know. If two different subfolders share a basename, only the first
+    one encountered gets a match from a given batch.
     """
     if not filenames:
         return {}
-    lower_to_name = {f.lower(): f for f in filenames}
-    placeholders = ','.join('?' * len(lower_to_name))
+    basename_to_name = {}
+    for f in filenames:
+        base = f.rsplit('/', 1)[-1].lower()
+        basename_to_name.setdefault(base, f)
+    placeholders = ','.join('?' * len(basename_to_name))
     query = f"""
         SELECT LOWER(f.baseName || '.' || f.extension) AS fname, i.rating
         FROM Adobe_images i
@@ -238,14 +248,14 @@ def query_lightroom_ratings(catalog_path: str, filenames: list) -> dict:
     """
     try:
         with sqlite3.connect(f'file:{catalog_path}?mode=ro', uri=True, timeout=2) as conn:
-            rows = conn.execute(query, list(lower_to_name)).fetchall()
+            rows = conn.execute(query, list(basename_to_name)).fetchall()
     except Exception as e:
         print(f'Lightroom catalog read error: {e}')
         return {}
     return {
-        lower_to_name[fname]: int(rating)
+        basename_to_name[fname]: int(rating)
         for fname, rating in rows
-        if rating is not None and fname in lower_to_name
+        if rating is not None and fname in basename_to_name
     }
 
 
@@ -348,6 +358,9 @@ def compute_series(photos: list) -> list:
             last_flash_entry = entry
         elif last_flash_entry is not None:
             last_flash_entry['overlays'].append(photo)
+        # else: no base has appeared yet (e.g. a stray non-flash shot before
+        # the first real photo of the shoot) -- deliberately dropped rather
+        # than shown as its own series.
     return series
 
 
@@ -366,6 +379,35 @@ def _relative_name(filepath: Path) -> str:
         return filepath.name
 
 
+def _resolve_flash(filepath: Path) -> tuple[bool, bool, str, str | None]:
+    """Read EXIF flash/timestamp and apply any Lightroom flash-override
+    keyword. Returns (flash, exif_flash, timestamp, error)."""
+    flash, timestamp = get_exif_info(filepath)
+    error = None
+    if flash is None:
+        flash = False
+        error = 'Could not read EXIF'
+    exif_flash = flash
+    flash_override = get_flash_override(filepath)
+    if flash_override is not None:
+        flash = flash_override
+    return flash, exif_flash, timestamp or '', error
+
+
+def _preview_and_aspect(filepath: Path) -> tuple[Path | None, float | None]:
+    """Extract a preview and compute its width/height aspect ratio, if any."""
+    preview_path = extract_preview(filepath)
+    aspect = None
+    if preview_path:
+        try:
+            with Image.open(preview_path) as img:
+                w, h = img.size
+                aspect = round(w / h, 4) if h else None
+        except Exception:
+            pass
+    return preview_path, aspect
+
+
 def process_file(filepath_str: str, skip_stability_check: bool = False) -> None:
     filepath = Path(filepath_str)
     if filepath.suffix.lower() not in IMG_EXTENSIONS:
@@ -377,28 +419,11 @@ def process_file(filepath_str: str, skip_stability_check: bool = False) -> None:
         print(f'File did not stabilise: {filepath.name}')
         return
 
-    flash, timestamp = get_exif_info(filepath)
-    error = None
-    if flash is None:
+    flash, exif_flash, timestamp, error = _resolve_flash(filepath)
+    if error:
         print(f'Could not read EXIF from {filepath.name}, adding as placeholder')
-        flash = False
-        error = 'Could not read EXIF'
 
-    exif_flash = flash
-    flash_override = get_flash_override(filepath)
-    if flash_override is not None:
-        flash = flash_override
-
-    preview_path = extract_preview(filepath)
-
-    aspect = None
-    if preview_path:
-        try:
-            with Image.open(preview_path) as img:
-                w, h = img.size
-                aspect = round(w / h, 4) if h else None
-        except Exception:
-            pass
+    preview_path, aspect = _preview_and_aspect(filepath)
 
     with state_lock:
         catalog = state['lightroom_catalog']
@@ -410,7 +435,7 @@ def process_file(filepath_str: str, skip_stability_check: bool = False) -> None:
         'path': str(filepath),
         'flash': flash,
         'exif_flash': exif_flash,
-        'timestamp': timestamp or '',
+        'timestamp': timestamp,
         'has_preview': preview_path is not None,
         'aspect': aspect,
         'error': error,
@@ -452,29 +477,13 @@ def refresh_metadata(filename: str, full_rescan: bool = False) -> None:
 
     updated = {}
     if full_rescan:
-        flash, timestamp = get_exif_info(filepath)
-        error = None
-        if flash is None:
-            flash = False
-            error = 'Could not read EXIF'
-        exif_flash = flash
-        flash_override = get_flash_override(filepath)
-        flash = flash_override if flash_override is not None else exif_flash
-
-        preview_path = extract_preview(filepath)
-        aspect = None
-        if preview_path:
-            try:
-                with Image.open(preview_path) as img:
-                    w, h = img.size
-                    aspect = round(w / h, 4) if h else None
-            except Exception:
-                pass
+        flash, exif_flash, timestamp, error = _resolve_flash(filepath)
+        preview_path, aspect = _preview_and_aspect(filepath)
 
         updated.update({
             'flash': flash,
             'exif_flash': exif_flash,
-            'timestamp': timestamp or '',
+            'timestamp': timestamp,
             'has_preview': preview_path is not None,
             'aspect': aspect,
             'error': error,
@@ -525,7 +534,9 @@ def handle_modified(filepath_str: str) -> None:
         full_rescan = False
 
     if matched:
-        wait_for_file_stable(filepath, timeout=5)
+        if not wait_for_file_stable(filepath, timeout=5):
+            print(f'File did not stabilise: {filepath.name}')
+            return
         refresh_metadata(matched, full_rescan=full_rescan)
 
 
