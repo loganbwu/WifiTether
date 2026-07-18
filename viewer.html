@@ -602,7 +602,10 @@ button:hover {
   var TARGET_AREA_MIN = 5000;
   var TARGET_AREA_MAX = 400000;
 
-  document.getElementById('gallery').addEventListener('wheel', function (e) {
+  // Listen on the whole document, not just #gallery, so a pinch gesture
+  // resizes thumbnails regardless of where the cursor happens to be —
+  // otherwise the browser's native page-zoom kicks in outside the gallery.
+  document.addEventListener('wheel', function (e) {
     if (!e.ctrlKey) return;
     e.preventDefault();
     TARGET_AREA = Math.min(TARGET_AREA_MAX, Math.max(TARGET_AREA_MIN,
