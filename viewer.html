@@ -863,10 +863,23 @@ button:hover {
   }
 
   // imgs[0] is the base; imgs[1..] correspond 1:1 with the series' overlays.
+  // Consumed once, the first time an animation's startTime is set from null
+  // (see tickCardAnimations) -- backdates that start so cards don't all
+  // begin their cycles in lockstep. Zeroed after use so it only ever offsets
+  // a card's very first cycle, not every one after it.
+  function takeInitialOffset(state) {
+    var offset = state.initialOffsetMs || 0;
+    state.initialOffsetMs = 0;
+    return offset;
+  }
+
   function startCardRotation(canvas, imgs, activeCount) {
     var activeIndices = [];
     for (var i = 1; i < Math.min(imgs.length, 1 + activeCount); i++) activeIndices.push(i);
-    var state = { kind: 'rotate', imgs: imgs, activeIndices: activeIndices, transition: null };
+    var state = {
+      kind: 'rotate', imgs: imgs, activeIndices: activeIndices, transition: null,
+      initialOffsetMs: Math.random() * CARD_ROTATION_MS,
+    };
     beginNextCardTransition(state);
     cardAnimations.set(canvas, state);
     cardVisibilityObserver.observe(canvas);
@@ -875,11 +888,11 @@ button:hover {
   // A single overlay never has anything to rotate in, so instead of sitting
   // at a static 100% (which reads as inert), it continuously breathes between
   // 100% and 0% opacity to signal there's a composited layer at all.
-  var PULSE_PERIOD_MS = 5000;
+  var PULSE_PERIOD_MS = 10000;   // one full 100%->0%->100% cycle: 5s down, 5s back up
   var PULSE_MIN_ALPHA = 0;
 
   function startCardPulse(canvas, imgs) {
-    var state = { kind: 'pulse', imgs: imgs, startTime: null };
+    var state = { kind: 'pulse', imgs: imgs, startTime: null, initialOffsetMs: Math.random() * PULSE_PERIOD_MS };
     cardAnimations.set(canvas, state);
     cardVisibilityObserver.observe(canvas);
   }
@@ -981,13 +994,13 @@ button:hover {
       if (!canvas.isConnected) { stopCardAnimation(canvas); return; }
 
       if (state.kind === 'pulse') {
-        if (state.startTime === null) state.startTime = timestamp;
+        if (state.startTime === null) state.startTime = timestamp - takeInitialOffset(state);
         if (shouldDraw && visibleCanvases.has(canvas)) drawPulsingCard(canvas, state, timestamp - state.startTime);
         return;
       }
 
       if (!state.transition) return;
-      if (state.transition.startTime === null) state.transition.startTime = timestamp;
+      if (state.transition.startTime === null) state.transition.startTime = timestamp - takeInitialOffset(state);
       var progress = Math.min(1, (timestamp - state.transition.startTime) / CARD_ROTATION_MS);
       if (shouldDraw && visibleCanvases.has(canvas)) drawRotatingCard(canvas, state, progress);
       if (progress >= 1) {
