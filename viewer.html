@@ -200,7 +200,8 @@ button:hover {
   background: #0a0a0a;
 }
 
-.tether-card__img-wrap img {
+.tether-card__img-wrap img,
+.tether-card__img-wrap canvas {
   width: 100%;
   height: auto;
   display: block;
@@ -691,10 +692,9 @@ button:hover {
         badge.textContent = '↯';
         badges.appendChild(badge);
       }
-      var img = document.createElement('img');
-      img.alt = c.filename;
-      img.loading = 'lazy';
-      wrap.appendChild(img);
+      var canvas = document.createElement('canvas');
+      canvas.setAttribute('aria-hidden', 'true');
+      wrap.appendChild(canvas);
     }
 
     var info = document.createElement('div');
@@ -717,13 +717,53 @@ button:hover {
     return card;
   }
 
-  // Refresh a card's thumbnail (composited with its overlays server-side) and
-  // count badge whenever the overlay count or the base photo's own content
-  // (re-exported/edited in place, e.g. from Lightroom) has changed.
+  function cardVersion(s) {
+    var parts = [s.overlays.length, s.base.mtime];
+    s.overlays.forEach(function (ov) { parts.push(ov.mtime); });
+    return parts.join(':');
+  }
+
+  // Screen-blends the base with all its overlays on a canvas, client-side —
+  // same technique the full-size viewer already uses for live overlay
+  // toggling, just applied once per card instead of interactively.
+  function renderCardThumbnail(canvas, s) {
+    var myGen = (canvas._thumbGen = (canvas._thumbGen || 0) + 1);
+    var photos = [s.base].concat(s.overlays);
+    var srcs = photos.map(function (p) { return previewUrl(p.filename) + '?v=' + encodeURIComponent(p.mtime); });
+    var imgs = srcs.map(function () { return new Image(); });
+    var loaded = 0;
+
+    function draw() {
+      if (canvas._thumbGen !== myGen) return;   // a newer render has superseded this one
+      var base = imgs[0];
+      if (!base.complete || !base.naturalWidth) return;
+      canvas.width = base.naturalWidth;
+      canvas.height = base.naturalHeight;
+      var ctx = canvas.getContext('2d');
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.drawImage(base, 0, 0);
+      for (var i = 1; i < imgs.length; i++) {
+        if (!imgs[i].complete || !imgs[i].naturalWidth) continue;
+        ctx.globalCompositeOperation = 'screen';
+        ctx.drawImage(imgs[i], 0, 0, canvas.width, canvas.height);
+      }
+      ctx.globalCompositeOperation = 'source-over';
+    }
+
+    imgs.forEach(function (img, idx) {
+      img.onload = function () { loaded++; if (loaded === srcs.length) draw(); };
+      img.onerror = function () { loaded++; if (loaded === srcs.length) draw(); };
+      img.src = srcs[idx];
+    });
+  }
+
+  // Refresh a card's thumbnail (composited client-side with its overlays) and
+  // count badge whenever the overlay count, or any involved photo's own
+  // content (re-exported/edited in place, e.g. from Lightroom), has changed.
   function updateCardOverlays(card, s) {
     if (s.base.error) return;
     var count = s.overlays.length;
-    var version = count + ':' + s.base.mtime;
+    var version = cardVersion(s);
     if (card.dataset.version === version) return;
     card.dataset.version = version;
     card.setAttribute('aria-label', cardAriaLabel(s));
@@ -741,8 +781,8 @@ button:hover {
       countBadge.remove();
     }
 
-    var img = card.querySelector('.tether-card__img-wrap img');
-    if (img) img.src = previewUrl(s.base.filename) + '?v=' + encodeURIComponent(version);
+    var canvas = card.querySelector('.tether-card__img-wrap canvas');
+    if (canvas) renderCardThumbnail(canvas, s);
   }
 
   // ---------------------------------------------------------------------------

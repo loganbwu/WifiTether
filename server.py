@@ -26,7 +26,7 @@ from pathlib import Path
 
 import rawpy
 from flask import Flask, Response, jsonify, request, send_file, send_from_directory
-from PIL import Image, ImageChops, ImageOps
+from PIL import Image, ImageOps
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
@@ -298,40 +298,6 @@ def extract_preview(filepath: Path) -> Path | None:
     except Exception as e:
         print(f'Preview extraction error for {filepath.name}: {e}')
     return None
-
-
-def composite_series_preview(entry: dict) -> Path | None:
-    """Return path to a thumbnail of the base screen-blended with its overlays.
-    Falls back to the plain base preview when there are no overlays."""
-    base = entry['base']
-    overlays = entry['overlays']
-    if not overlays:
-        return extract_preview(Path(base['path']))
-
-    combined_sig = _preview_cache_key(Path(base['path'])) + ''.join(
-        _preview_cache_key(Path(overlay['path'])) for overlay in overlays
-    )
-    cache_key = hashlib.sha1(combined_sig.encode()).hexdigest()
-    cache_path = PREVIEW_CACHE_DIR / (cache_key + '_composite.jpg')
-    if cache_path.exists():
-        return cache_path
-
-    base_preview = extract_preview(Path(base['path']))
-    if not base_preview:
-        return None
-    try:
-        img = Image.open(base_preview).convert('RGB')
-        for overlay in overlays:
-            overlay_preview = extract_preview(Path(overlay['path']))
-            if not overlay_preview:
-                continue
-            overlay_img = Image.open(overlay_preview).convert('RGB').resize(img.size, Image.LANCZOS)
-            img = ImageChops.screen(img, overlay_img)
-        img.save(cache_path, 'JPEG', quality=85)
-        return cache_path
-    except Exception as e:
-        print(f'Composite preview error for {base["filename"]}: {e}')
-        return None
 
 
 def extract_full(filepath: Path) -> Path | None:
@@ -703,10 +669,9 @@ def api_series():
 def api_preview(filename: str):
     with state_lock:
         photo = next((p for p in state['photos'] if p['filename'] == filename), None)
-        entry = next((s for s in state['series'] if s['base']['filename'] == filename), None)
     if not photo:
         return 'Not found', 404
-    preview = composite_series_preview(entry) if entry else extract_preview(Path(photo['path']))
+    preview = extract_preview(Path(photo['path']))
     if preview:
         return send_file(str(preview), mimetype='image/jpeg')
     return 'Preview not available', 404
