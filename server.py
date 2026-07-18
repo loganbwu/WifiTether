@@ -351,6 +351,21 @@ def compute_series(photos: list) -> list:
     return series
 
 
+def _relative_name(filepath: Path) -> str:
+    """Path relative to the watched folder, POSIX-style (forward slashes even
+    on Windows). Used as each photo's stable identity instead of the bare
+    filename, so photos in different subfolders with the same basename
+    (e.g. two sessions each starting their own IMG_0001) don't collide."""
+    with state_lock:
+        folder = state['folder']
+    if not folder:
+        return filepath.name
+    try:
+        return filepath.relative_to(folder).as_posix()
+    except ValueError:
+        return filepath.name
+
+
 def process_file(filepath_str: str, skip_stability_check: bool = False) -> None:
     filepath = Path(filepath_str)
     if filepath.suffix.lower() not in IMG_EXTENSIONS:
@@ -389,8 +404,9 @@ def process_file(filepath_str: str, skip_stability_check: bool = False) -> None:
         catalog = state['lightroom_catalog']
     rating = get_rating(filepath, catalog)
 
+    rel_name = _relative_name(filepath)
     photo = {
-        'filename': filepath.name,
+        'filename': rel_name,
         'path': str(filepath),
         'flash': flash,
         'exif_flash': exif_flash,
@@ -403,14 +419,14 @@ def process_file(filepath_str: str, skip_stability_check: bool = False) -> None:
     }
 
     with state_lock:
-        if any(p['filename'] == filepath.name for p in state['photos']):
+        if any(p['filename'] == rel_name for p in state['photos']):
             return
         state['photos'].append(photo)
         state['photos'].sort(key=lambda x: (x['timestamp'], x['filename']))
         state['series'] = compute_series(state['photos'])
 
-    notify_clients({'type': 'update', 'filename': filepath.name})
-    print(f'Added: {filepath.name}  flash={flash}  ts={timestamp}  rating={rating}')
+    notify_clients({'type': 'update', 'filename': rel_name})
+    print(f'Added: {rel_name}  flash={flash}  ts={timestamp}  rating={rating}')
 
 
 def refresh_metadata(filename: str, full_rescan: bool = False) -> None:
@@ -492,11 +508,17 @@ def handle_modified(filepath_str: str) -> None:
     with state_lock:
         known_filenames = {p['filename'] for p in state['photos']}
 
+    rel_name = _relative_name(filepath)
+
     if filepath.suffix.lower() == '.xmp':
-        matched = next((name for name in known_filenames if Path(name).stem == filepath.stem), None)
+        # Compare the full relative path minus extension (not just the bare
+        # stem) so a sidecar only matches a photo in the *same* subfolder --
+        # two different sessions can each have their own IMG_0001.
+        sidecar_stem = rel_name.rsplit('.', 1)[0]
+        matched = next((name for name in known_filenames if name.rsplit('.', 1)[0] == sidecar_stem), None)
         full_rescan = False
-    elif filepath.name in known_filenames:
-        matched = filepath.name
+    elif rel_name in known_filenames:
+        matched = rel_name
         full_rescan = True
     else:
         matched = None
@@ -567,9 +589,16 @@ def notify_clients(event: dict) -> None:
 
 
 def scan_folder(folder: str) -> None:
-    """Process existing files in the folder in parallel (files are already fully written)."""
-    files = sorted(Path(folder).iterdir(), key=lambda f: f.stat().st_mtime if f.is_file() else 0)
-    targets = [str(f) for f in files if f.is_file() and f.suffix.lower() in IMG_EXTENSIONS]
+    """Process existing files in the folder and all its subfolders (skipping
+    hidden dot-directories) in parallel (files are already fully written)."""
+    root = Path(folder)
+    files = [
+        f for f in root.rglob('*')
+        if f.is_file() and f.suffix.lower() in IMG_EXTENSIONS
+        and not any(part.startswith('.') for part in f.relative_to(root).parts)
+    ]
+    files.sort(key=lambda f: f.stat().st_mtime)
+    targets = [str(f) for f in files]
     with ThreadPoolExecutor() as pool:
         pool.map(functools.partial(process_file, skip_stability_check=True), targets)
 
@@ -646,7 +675,7 @@ def api_watch():
             observer.stop()
             observer.join()
         new_observer = Observer()
-        new_observer.schedule(FolderHandler(), folder, recursive=False)
+        new_observer.schedule(FolderHandler(), folder, recursive=True)
         new_observer.start()
         observer = new_observer
 

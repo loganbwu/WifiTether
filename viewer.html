@@ -558,12 +558,20 @@ button:hover {
     }, 50);
   }
 
+  // Filenames can now include subfolder path segments (e.g. "session1/IMG_0001.CR3").
+  // encodeURIComponent on the whole string would also escape the '/' separators
+  // into %2F, which breaks Flask's <path:filename> route matching -- encode each
+  // segment individually and rejoin with literal slashes instead.
+  function encodeFilenamePath(filename) {
+    return filename.split('/').map(encodeURIComponent).join('/');
+  }
+
   function previewUrl(filename) {
-    return '/api/preview/' + encodeURIComponent(filename);
+    return '/api/preview/' + encodeFilenamePath(filename);
   }
 
   function photoUrl(filename) {
-    return '/api/photo/' + encodeURIComponent(filename);
+    return '/api/photo/' + encodeFilenamePath(filename);
   }
 
   // ---------------------------------------------------------------------------

@@ -26,6 +26,7 @@ def make_jpeg(tmp_path):
 
     def _make(name: str, flash: int, timestamp: str = '2026:01:01 10:00:00') -> Path:
         dst = tmp_path / name
+        dst.parent.mkdir(parents=True, exist_ok=True)   # allow nested names like 'session1/photo.jpg'
         exif_bytes = piexif.dump({
             '0th': {},
             'Exif': {
