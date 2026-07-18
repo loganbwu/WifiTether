@@ -318,6 +318,9 @@ button:hover {
   color: var(--white);
   font-size: 1em;
   padding: 8px;
+  line-height: 1;
+  text-transform: uppercase;
+  font-family: 'Oswald', sans-serif;
   cursor: pointer;
   flex-shrink: 0;
   display: flex;
@@ -351,6 +354,9 @@ button:hover {
   color: var(--white);
   font-size: 0.7em;
   padding: 4px 6px;
+  line-height: 1;
+  text-transform: uppercase;
+  font-family: 'Oswald', sans-serif;
   cursor: pointer;
 }
 
@@ -360,10 +366,10 @@ button:hover {
   border-color: var(--pale-blue);
 }
 
-.overlays-list {
+#viewer-overlays-container {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 
 .overlay-btn {
@@ -1163,9 +1169,6 @@ button:hover {
     row.appendChild(selectAllBtn);
     container.appendChild(row);
 
-    var list = document.createElement('div');
-    list.className = 'overlays-list';
-
     var btns = [];
     series.overlays.forEach(function (ov, i) {
       var btn = document.createElement('button');
@@ -1200,7 +1203,7 @@ button:hover {
         });
       }(i));
 
-      list.appendChild(btn);
+      container.appendChild(btn);
     });
 
     selectAllBtn.addEventListener('click', function () {
@@ -1219,7 +1222,6 @@ button:hover {
     });
 
     updateSelectAllBtn(selectAllBtn);
-    container.appendChild(list);
   }
 
   function updateSelectAllBtn(btn) {
