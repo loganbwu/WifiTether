@@ -738,7 +738,7 @@ button:hover {
   //
   // How many overlays are shown at once (n = total overlay count):
   //   n=0   -> 0 (just the base, static)
-  //   n=1   -> 1, permanently, but pulsing 100%<->50% opacity (nothing to
+  //   n=1   -> 1, permanently, but pulsing 100%<->0% opacity (nothing to
   //            rotate in, so a static full-opacity overlay looked inert)
   //   n=2-3 -> n-1 (always one fewer than the total, rotating)
   //   n>=4  -> MAX_ACTIVE_OVERLAYS (3), rotating
@@ -874,9 +874,9 @@ button:hover {
 
   // A single overlay never has anything to rotate in, so instead of sitting
   // at a static 100% (which reads as inert), it continuously breathes between
-  // 100% and 50% opacity to signal there's a composited layer at all.
-  var PULSE_PERIOD_MS = CARD_ROTATION_MS;
-  var PULSE_MIN_ALPHA = 0.5;
+  // 100% and 0% opacity to signal there's a composited layer at all.
+  var PULSE_PERIOD_MS = 5000;
+  var PULSE_MIN_ALPHA = 0;
 
   function startCardPulse(canvas, imgs) {
     var state = { kind: 'pulse', imgs: imgs, startTime: null };
