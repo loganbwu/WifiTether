@@ -165,3 +165,44 @@ def test_lightroom_catalog_empty_path_clears_it(client, tmp_path):
     r = client.post('/api/lightroom-catalog', json={'path': ''})
     assert r.status_code == 200
     assert r.get_json()['lightroom_catalog'] is None
+
+
+# ---------------------------------------------------------------------------
+# /api/photo
+# ---------------------------------------------------------------------------
+
+def test_photo_unknown_filename_returns_404(client):
+    assert client.get('/api/photo/no_such_file.jpg').status_code == 404
+
+
+def test_photo_jpeg_returns_full_res_image(client, make_jpeg):
+    path = make_jpeg('photo.jpg', flash=1, timestamp='2026:01:01 10:00:00')
+    process_file(str(path))
+
+    r = client.get('/api/photo/photo.jpg')
+    assert r.status_code == 200
+    assert r.content_type.startswith('image/')
+
+
+# ---------------------------------------------------------------------------
+# /api/stream (SSE)
+# ---------------------------------------------------------------------------
+
+def test_stream_sends_connected_message_first(client):
+    response = client.get('/api/stream')
+    first_chunk = next(response.response)
+    assert b'"connected"' in first_chunk
+    response.close()
+
+
+def test_stream_registers_and_unregisters_sse_client(client):
+    from server import sse_clients
+
+    before = len(sse_clients)
+    response = client.get('/api/stream')
+    assert len(sse_clients) == before + 1   # registered as soon as the route runs
+
+    next(response.response)   # pull the first ('connected') chunk
+    response.close()          # closes the generator -> triggers its cleanup path
+
+    assert len(sse_clients) == before

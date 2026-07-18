@@ -26,13 +26,11 @@ from pathlib import Path
 
 import rawpy
 from flask import Flask, Response, jsonify, request, send_file, send_from_directory
-from flask_cors import CORS
 from PIL import Image, ImageChops, ImageOps
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
 app = Flask(__name__, static_folder='.', static_url_path='')
-CORS(app)
 
 PREVIEW_CACHE_DIR = Path('/tmp/tether_previews')
 PREVIEW_CACHE_DIR.mkdir(exist_ok=True)
@@ -442,7 +440,7 @@ def process_file(filepath_str: str, skip_stability_check: bool = False) -> None:
         if any(p['filename'] == filepath.name for p in state['photos']):
             return
         state['photos'].append(photo)
-        state['photos'].sort(key=lambda x: x['timestamp'])
+        state['photos'].sort(key=lambda x: (x['timestamp'], x['filename']))
         state['series'] = compute_series(state['photos'])
 
     notify_clients({'type': 'update', 'filename': filepath.name})
@@ -511,7 +509,7 @@ def refresh_metadata(filename: str, full_rescan: bool = False) -> None:
             return
         photo.update(updated)
         if full_rescan:
-            state['photos'].sort(key=lambda x: x['timestamp'])
+            state['photos'].sort(key=lambda x: (x['timestamp'], x['filename']))
         state['series'] = compute_series(state['photos'])
 
     notify_clients({'type': 'metadata_updated'})
@@ -543,6 +541,29 @@ def handle_modified(filepath_str: str) -> None:
         refresh_metadata(matched, full_rescan=full_rescan)
 
 
+def _lightroom_poll_once() -> None:
+    """Run a single Lightroom-catalog poll iteration: compare catalog ratings
+    against all tracked photos and notify clients if anything changed."""
+    with state_lock:
+        catalog = state['lightroom_catalog']
+        filenames = [p['filename'] for p in state['photos']]
+    if not catalog or not filenames:
+        return
+
+    ratings = query_lightroom_ratings(catalog, filenames)
+    changed = False
+    with state_lock:
+        for photo in state['photos']:
+            new_rating = ratings.get(photo['filename'])
+            if new_rating is not None and photo['rating'] != new_rating:
+                photo['rating'] = new_rating
+                changed = True
+        if changed:
+            state['series'] = compute_series(state['photos'])
+    if changed:
+        notify_clients({'type': 'metadata_updated'})
+
+
 def lightroom_poll_loop() -> None:
     """Periodically re-check the Lightroom catalog for rating changes.
 
@@ -552,24 +573,10 @@ def lightroom_poll_loop() -> None:
     """
     while True:
         time.sleep(LIGHTROOM_POLL_INTERVAL_SEC)
-        with state_lock:
-            catalog = state['lightroom_catalog']
-            filenames = [p['filename'] for p in state['photos']]
-        if not catalog or not filenames:
-            continue
-
-        ratings = query_lightroom_ratings(catalog, filenames)
-        changed = False
-        with state_lock:
-            for photo in state['photos']:
-                new_rating = ratings.get(photo['filename'])
-                if new_rating is not None and photo['rating'] != new_rating:
-                    photo['rating'] = new_rating
-                    changed = True
-            if changed:
-                state['series'] = compute_series(state['photos'])
-        if changed:
-            notify_clients({'type': 'metadata_updated'})
+        try:
+            _lightroom_poll_once()
+        except Exception as e:
+            print(f'Lightroom poll loop error: {e}')
 
 
 class FolderHandler(FileSystemEventHandler):

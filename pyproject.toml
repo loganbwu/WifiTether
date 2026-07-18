@@ -7,7 +7,6 @@ authors = [
 ]
 dependencies = [
     "flask>=3.0",
-    "flask-cors>=4.0",
     "watchdog>=4.0",
     "pillow>=11.0",
     "rawpy>=0.21",
@@ -20,7 +19,6 @@ virtual = true
 dev-dependencies = [
     "pytest>=8.0",
     "piexif>=1.1",
-    "exifread>=3.5.1",
 ]
 
 [tool.rye.scripts]

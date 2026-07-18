@@ -6,8 +6,11 @@ import piexif
 import pytest
 from PIL import Image
 from server import (
+    FolderHandler,
     _flash_override_from_xmp_bytes,
+    _lightroom_poll_once,
     _rating_from_xmp_bytes,
+    compute_series,
     get_file_rating,
     get_flash_override,
     get_rating,
@@ -18,6 +21,7 @@ from server import (
     sse_clients,
     sse_lock,
     state,
+    state_lock,
 )
 
 
@@ -130,6 +134,50 @@ def test_catalog_unexpected_schema_returns_empty_dict(tmp_path):
 
     result = query_lightroom_ratings(str(path), ['IMG_0001.CR3'])
     assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# _lightroom_poll_once — the poll loop's own per-iteration logic
+# ---------------------------------------------------------------------------
+
+def _tracked_photo(filename, rating):
+    return {
+        'filename': filename, 'path': '', 'flash': True, 'exif_flash': True,
+        'timestamp': '2026:01:01 10:00:00', 'has_preview': False, 'aspect': None,
+        'error': None, 'rating': rating, 'mtime': 0,
+    }
+
+
+def test_lightroom_poll_once_updates_rating_and_notifies(clean_state, lrcat, sse_queue):
+    with state_lock:
+        state['lightroom_catalog'] = lrcat
+        state['photos'] = [_tracked_photo('IMG_0001.CR3', rating=1)]
+        state['series'] = compute_series(state['photos'])
+
+    _lightroom_poll_once()
+
+    assert state['photos'][0]['rating'] == 4
+    assert state['series'][0]['base']['rating'] == 4
+    assert not sse_queue.empty()
+
+
+def test_lightroom_poll_once_noop_when_no_catalog_configured(clean_state, sse_queue):
+    with state_lock:
+        state['lightroom_catalog'] = None
+        state['photos'] = [_tracked_photo('IMG_0001.CR3', rating=1)]
+
+    _lightroom_poll_once()
+    assert sse_queue.empty()
+
+
+def test_lightroom_poll_once_noop_when_rating_already_matches(clean_state, lrcat, sse_queue):
+    with state_lock:
+        state['lightroom_catalog'] = lrcat
+        state['photos'] = [_tracked_photo('IMG_0001.CR3', rating=4)]   # already matches catalog
+        state['series'] = compute_series(state['photos'])
+
+    _lightroom_poll_once()
+    assert sse_queue.empty()
 
 
 def test_empty_filenames_short_circuits(lrcat):
@@ -393,3 +441,75 @@ def test_refresh_metadata_full_rescan_notifies_on_pixel_only_change(clean_state,
     photo = state['photos'][0]
     assert photo['mtime'] != mtime_before
     assert not sse_queue.empty(), 'clients must be notified even when only pixel content changed'
+
+
+# ---------------------------------------------------------------------------
+# FolderHandler — watchdog event routing (on_created/on_modified each spawn a
+# background thread, so these poll briefly rather than asserting instantly)
+# ---------------------------------------------------------------------------
+
+class _FakeEvent:
+    def __init__(self, src_path, is_directory=False):
+        self.src_path = src_path
+        self.is_directory = is_directory
+
+
+def _wait_until(predicate, timeout=2.0, interval=0.02):
+    import time as time_module
+    deadline = time_module.time() + timeout
+    while time_module.time() < deadline:
+        if predicate():
+            return True
+        time_module.sleep(interval)
+    return False
+
+
+def test_folder_handler_on_created_routes_xmp_to_handle_modified(monkeypatch):
+    calls = []
+    monkeypatch.setattr('server.handle_modified', lambda path: calls.append(('handle_modified', path)))
+    monkeypatch.setattr('server.process_file', lambda *a, **kw: calls.append(('process_file', a)))
+
+    FolderHandler().on_created(_FakeEvent('/tmp/photo.xmp'))
+
+    assert _wait_until(lambda: len(calls) == 1)
+    assert calls == [('handle_modified', '/tmp/photo.xmp')]
+
+
+def test_folder_handler_on_created_routes_image_to_process_file(monkeypatch):
+    calls = []
+    monkeypatch.setattr('server.handle_modified', lambda path: calls.append(('handle_modified', path)))
+    monkeypatch.setattr('server.process_file', lambda *a, **kw: calls.append(('process_file', a)))
+
+    FolderHandler().on_created(_FakeEvent('/tmp/photo.jpg'))
+
+    assert _wait_until(lambda: len(calls) == 1)
+    assert calls[0] == ('process_file', ('/tmp/photo.jpg',))
+
+
+def test_folder_handler_on_created_ignores_directories(monkeypatch):
+    calls = []
+    monkeypatch.setattr('server.handle_modified', lambda path: calls.append(path))
+    monkeypatch.setattr('server.process_file', lambda *a, **kw: calls.append(a))
+
+    FolderHandler().on_created(_FakeEvent('/tmp/somedir', is_directory=True))
+
+    assert not _wait_until(lambda: len(calls) > 0, timeout=0.3)
+
+
+def test_folder_handler_on_modified_routes_to_handle_modified(monkeypatch):
+    calls = []
+    monkeypatch.setattr('server.handle_modified', lambda path: calls.append(path))
+
+    FolderHandler().on_modified(_FakeEvent('/tmp/photo.jpg'))
+
+    assert _wait_until(lambda: len(calls) == 1)
+    assert calls == ['/tmp/photo.jpg']
+
+
+def test_folder_handler_on_modified_ignores_directories(monkeypatch):
+    calls = []
+    monkeypatch.setattr('server.handle_modified', lambda path: calls.append(path))
+
+    FolderHandler().on_modified(_FakeEvent('/tmp/somedir', is_directory=True))
+
+    assert not _wait_until(lambda: len(calls) > 0, timeout=0.3)
