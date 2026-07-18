@@ -743,7 +743,7 @@ button:hover {
   //   n>=4  -> MAX_ACTIVE_OVERLAYS (3), rotating
   var MAX_ACTIVE_OVERLAYS = 3;
   var CARD_ROTATION_MS = 3000;
-  var CARD_MAX_FPS = 5;
+  var CARD_MAX_FPS = 10;
   var CARD_REDRAW_INTERVAL_MS = 1000 / CARD_MAX_FPS;
   var lastCardDrawTime = 0;
   var cardAnimations = new Map();   // canvas -> rotation state, driven by tickCardAnimations
