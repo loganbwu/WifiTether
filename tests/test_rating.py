@@ -2,15 +2,19 @@
 
 import sqlite3
 
+import piexif
 import pytest
+from PIL import Image
 from server import (
+    _flash_override_from_xmp_bytes,
     _rating_from_xmp_bytes,
     get_file_rating,
+    get_flash_override,
     get_rating,
     handle_modified,
     process_file,
     query_lightroom_ratings,
-    refresh_rating,
+    refresh_metadata,
     sse_clients,
     sse_lock,
     state,
@@ -155,7 +159,58 @@ def test_get_rating_no_catalog_uses_file(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# refresh_rating — re-derive an already-tracked photo's rating
+# _flash_override_from_xmp_bytes / get_flash_override
+# ---------------------------------------------------------------------------
+
+def test_flash_override_fired_keyword():
+    data = b'<dc:subject><rdf:Bag><rdf:li>flash_fired</rdf:li></rdf:Bag></dc:subject>'
+    assert _flash_override_from_xmp_bytes(data) is True
+
+
+def test_flash_override_not_fired_keyword():
+    data = b'<dc:subject><rdf:Bag><rdf:li>flash_not_fired</rdf:li></rdf:Bag></dc:subject>'
+    assert _flash_override_from_xmp_bytes(data) is False
+
+
+def test_flash_override_absent_returns_none():
+    data = b'<dc:subject><rdf:Bag><rdf:li>some_other_keyword</rdf:li></rdf:Bag></dc:subject>'
+    assert _flash_override_from_xmp_bytes(data) is None
+
+
+def test_flash_override_both_keywords_is_ambiguous():
+    data = b'<rdf:li>flash_fired</rdf:li><rdf:li>flash_not_fired</rdf:li>'
+    assert _flash_override_from_xmp_bytes(data) is None
+
+
+def test_get_flash_override_sidecar_takes_precedence(tmp_path):
+    photo = tmp_path / 'photo.jpg'
+    photo.write_bytes(b'<rdf:li>flash_not_fired</rdf:li>')
+    sidecar = tmp_path / 'photo.xmp'
+    sidecar.write_bytes(b'<rdf:li>flash_fired</rdf:li>')
+
+    assert get_flash_override(photo) is True
+
+
+def test_get_flash_override_none_when_no_keyword(tmp_path):
+    photo = tmp_path / 'photo.jpg'
+    photo.write_bytes(b'no keywords here')
+    assert get_flash_override(photo) is None
+
+
+def test_process_file_applies_flash_override_at_capture_time(clean_state, make_jpeg):
+    # EXIF says no flash (e.g. an off-camera strobe the camera can't detect),
+    # but a sidecar written before the file was even scanned overrides it.
+    path = make_jpeg('photo.jpg', flash=0, timestamp='2026:01:01 10:00:00')
+    path.with_suffix('.xmp').write_bytes(b'<rdf:li>flash_fired</rdf:li>')
+    process_file(str(path))
+
+    photo = state['photos'][0]
+    assert photo['exif_flash'] is False
+    assert photo['flash'] is True
+
+
+# ---------------------------------------------------------------------------
+# refresh_metadata — re-derive an already-tracked photo's rating and flash
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
@@ -170,13 +225,13 @@ def sse_queue():
             sse_clients.remove(q)
 
 
-def test_refresh_rating_updates_state_and_notifies(clean_state, make_jpeg, monkeypatch, sse_queue):
+def test_refresh_metadata_updates_rating_and_notifies(clean_state, make_jpeg, monkeypatch, sse_queue):
     monkeypatch.setattr('server.get_file_rating', lambda path: 2)
     path = make_jpeg('photo.jpg', flash=1, timestamp='2026:01:01 10:00:00')
     process_file(str(path))
 
     monkeypatch.setattr('server.get_file_rating', lambda path: 4)
-    refresh_rating('photo.jpg')
+    refresh_metadata('photo.jpg')
 
     photo = next(p for p in state['photos'] if p['filename'] == 'photo.jpg')
     assert photo['rating'] == 4
@@ -184,24 +239,38 @@ def test_refresh_rating_updates_state_and_notifies(clean_state, make_jpeg, monke
     assert not sse_queue.empty()
 
 
-def test_refresh_rating_noop_when_unchanged(clean_state, make_jpeg, monkeypatch, sse_queue):
+def test_refresh_metadata_applies_flash_override(clean_state, make_jpeg, sse_queue):
+    # Camera EXIF says flash did not fire (an off-camera strobe it can't detect).
+    path = make_jpeg('photo.jpg', flash=0, timestamp='2026:01:01 10:00:00')
+    process_file(str(path))
+    assert state['photos'][0]['flash'] is False
+
+    path.with_suffix('.xmp').write_bytes(b'<rdf:li>flash_fired</rdf:li>')
+    refresh_metadata('photo.jpg')
+
+    photo = next(p for p in state['photos'] if p['filename'] == 'photo.jpg')
+    assert photo['flash'] is True
+    assert state['series'][0]['base']['flash'] is True
+
+
+def test_refresh_metadata_noop_when_unchanged(clean_state, make_jpeg, monkeypatch, sse_queue):
     monkeypatch.setattr('server.get_file_rating', lambda path: 3)
     path = make_jpeg('photo.jpg', flash=1, timestamp='2026:01:01 10:00:00')
     process_file(str(path))
     while not sse_queue.empty():   # drain the 'update' notification from process_file
         sse_queue.get_nowait()
 
-    refresh_rating('photo.jpg')   # rating still 3 — nothing changed
+    refresh_metadata('photo.jpg')   # rating still 3, no override — nothing changed
     assert sse_queue.empty()
 
 
-def test_refresh_rating_unknown_filename_is_noop(clean_state, sse_queue):
-    refresh_rating('does_not_exist.jpg')
+def test_refresh_metadata_unknown_filename_is_noop(clean_state, sse_queue):
+    refresh_metadata('does_not_exist.jpg')
     assert sse_queue.empty()
 
 
 # ---------------------------------------------------------------------------
-# handle_modified — routes sidecar/file changes to refresh_rating
+# handle_modified — routes sidecar/file changes to refresh_metadata
 # ---------------------------------------------------------------------------
 
 def test_handle_modified_matches_sidecar_to_tracked_photo(clean_state, make_jpeg):
@@ -218,8 +287,109 @@ def test_handle_modified_matches_sidecar_to_tracked_photo(clean_state, make_jpeg
     assert photo['rating'] == 5
 
 
+def test_handle_modified_picks_up_flash_override_too(clean_state, make_jpeg):
+    path = make_jpeg('photo.jpg', flash=0, timestamp='2026:01:01 10:00:00')
+    process_file(str(path))
+
+    sidecar = path.with_suffix('.xmp')
+    sidecar.write_bytes(b'<rdf:li>flash_fired</rdf:li>')
+    handle_modified(str(sidecar))
+
+    photo = next(p for p in state['photos'] if p['filename'] == 'photo.jpg')
+    assert photo['flash'] is True
+
+
 def test_handle_modified_ignores_untracked_file(clean_state, tmp_path):
     untracked = tmp_path / 'untracked.jpg'
     untracked.write_bytes(b'not tracked')
     handle_modified(str(untracked))   # should not raise
     assert state['photos'] == []
+
+
+# ---------------------------------------------------------------------------
+# refresh_metadata(full_rescan=True) / handle_modified on the photo file
+# itself -- e.g. a Lightroom re-export overwriting the same path after
+# further edits, where the pixel content and embedded EXIF can both change.
+# ---------------------------------------------------------------------------
+
+def _write_jpeg(path, size, flash, timestamp='2026:01:01 10:00:00'):
+    exif_bytes = piexif.dump({
+        '0th': {},
+        'Exif': {
+            piexif.ExifIFD.Flash: flash,
+            piexif.ExifIFD.DateTimeOriginal: timestamp.encode('ascii'),
+        },
+        '1st': {}, 'GPS': {}, 'Interop': {},
+    })
+    Image.new('RGB', size, (200, 100, 50)).save(path, exif=exif_bytes)
+
+
+def test_refresh_metadata_full_rescan_updates_everything(clean_state, tmp_path):
+    path = tmp_path / 'photo.jpg'
+    _write_jpeg(path, (100, 100), flash=0, timestamp='2026:01:01 10:00:00')
+    process_file(str(path))
+
+    original = state['photos'][0]
+    assert original['flash'] is False
+    assert original['aspect'] == 1.0
+    assert original['timestamp'] == '2026:01:01 10:00:00'
+
+    # Re-exported after further edits: different crop (aspect), flash now
+    # detected, and a different capture timestamp.
+    _write_jpeg(path, (200, 100), flash=1, timestamp='2026:01:01 11:00:00')
+    refresh_metadata('photo.jpg', full_rescan=True)
+
+    photo = state['photos'][0]
+    assert photo['flash'] is True
+    assert photo['aspect'] == 2.0
+    assert photo['timestamp'] == '2026:01:01 11:00:00'
+
+
+def test_refresh_metadata_full_rescan_clears_stale_error(clean_state, tmp_path):
+    path = tmp_path / 'photo.jpg'
+    path.write_bytes(b'not a real jpeg')   # unreadable at first scan
+    process_file(str(path))
+    assert state['photos'][0]['error'] == 'Could not read EXIF'
+
+    _write_jpeg(path, (100, 100), flash=1)
+    refresh_metadata('photo.jpg', full_rescan=True)
+
+    photo = state['photos'][0]
+    assert photo['error'] is None
+    assert photo['flash'] is True
+
+
+def test_handle_modified_triggers_full_rescan_for_tracked_image_file(clean_state, tmp_path):
+    path = tmp_path / 'photo.jpg'
+    _write_jpeg(path, (100, 100), flash=0)
+    process_file(str(path))
+    assert state['photos'][0]['aspect'] == 1.0
+
+    _write_jpeg(path, (150, 100), flash=1)
+    handle_modified(str(path))   # the image file itself changed, not a sidecar
+
+    photo = state['photos'][0]
+    assert photo['aspect'] == 1.5
+    assert photo['flash'] is True
+
+
+def test_refresh_metadata_full_rescan_notifies_on_pixel_only_change(clean_state, tmp_path, sse_queue):
+    # A pure exposure/tone tweak re-export: same dimensions, same flash, same
+    # timestamp -- every "visible" field the old no-op check compared is
+    # identical, but the pixel content (and therefore the thumbnail clients
+    # should display) has genuinely changed.
+    path = tmp_path / 'photo.jpg'
+    _write_jpeg(path, (100, 100), flash=1)
+    process_file(str(path))
+    while not sse_queue.empty():
+        sse_queue.get_nowait()
+    mtime_before = state['photos'][0]['mtime']
+
+    import time as time_module
+    time_module.sleep(0.01)   # ensure a distinct mtime
+    _write_jpeg(path, (100, 100), flash=1)   # same size/flash/timestamp, re-written
+    refresh_metadata('photo.jpg', full_rescan=True)
+
+    photo = state['photos'][0]
+    assert photo['mtime'] != mtime_before
+    assert not sse_queue.empty(), 'clients must be notified even when only pixel content changed'

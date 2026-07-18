@@ -506,7 +506,7 @@ button:hover {
       } else if (msg.type === 'update') {
         newestFilename = msg.filename;
         fetchAndRender();
-      } else if (msg.type === 'ratings_updated') {
+      } else if (msg.type === 'metadata_updated') {
         fetchAndRender(true);
       }
     };
@@ -701,12 +701,14 @@ button:hover {
   }
 
   // Refresh a card's thumbnail (composited with its overlays server-side) and
-  // count badge when the number of overlays has changed since last render.
+  // count badge whenever the overlay count or the base photo's own content
+  // (re-exported/edited in place, e.g. from Lightroom) has changed.
   function updateCardOverlays(card, s) {
     if (s.base.error) return;
     var count = s.overlays.length;
-    if (card.dataset.overlayCount === String(count)) return;
-    card.dataset.overlayCount = String(count);
+    var version = count + ':' + s.base.mtime;
+    if (card.dataset.version === version) return;
+    card.dataset.version = version;
 
     var badges = card.querySelector('.tether-card__badges');
     var countBadge = badges.querySelector('.tether-card__badge--count');
@@ -722,7 +724,7 @@ button:hover {
     }
 
     var img = card.querySelector('.tether-card__img-wrap img');
-    if (img) img.src = previewUrl(s.base.filename) + '?ov=' + count;
+    if (img) img.src = previewUrl(s.base.filename) + '?v=' + encodeURIComponent(version);
   }
 
   // ---------------------------------------------------------------------------

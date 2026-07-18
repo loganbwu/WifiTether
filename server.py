@@ -15,10 +15,12 @@ import os
 import queue
 import re
 import sqlite3
+import hashlib
 import struct
 import subprocess
 import threading
 import time
+import webbrowser
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -181,6 +183,43 @@ def get_file_rating(filepath: Path) -> int | None:
         return None
 
 
+# A Lightroom keyword lets a photographer manually correct flash detection —
+# e.g. an off-camera/wireless-triggered flash that the camera's own EXIF Flash
+# tag never records as having fired. Keywords round-trip through dc:subject
+# in the same sidecar/embedded XMP we already scan for ratings.
+_FLASH_KEYWORD_RE = re.compile(rb'<rdf:li>\s*(flash_fired|flash_not_fired)\s*</rdf:li>', re.IGNORECASE)
+
+
+def _flash_override_from_xmp_bytes(data: bytes) -> bool | None:
+    """Find a 'flash_fired'/'flash_not_fired' keyword in an XMP dc:subject list.
+    Returns None if neither keyword is present, or if both are (ambiguous)."""
+    keywords = {m.group(1).lower() for m in _FLASH_KEYWORD_RE.finditer(data)}
+    fired = b'flash_fired' in keywords
+    not_fired = b'flash_not_fired' in keywords
+    if fired == not_fired:   # neither present, or both (contradictory) — don't guess
+        return None
+    return fired
+
+
+def get_flash_override(filepath: Path) -> bool | None:
+    """Return an explicit flash-fired override from a Lightroom keyword,
+    checking a sidecar .xmp first, then XMP embedded in the file itself.
+    Returns None if no override keyword is present."""
+    sidecar = filepath.with_suffix('.xmp')
+    if sidecar.exists():
+        try:
+            override = _flash_override_from_xmp_bytes(sidecar.read_bytes())
+            if override is not None:
+                return override
+        except Exception as e:
+            print(f'Sidecar XMP flash-override error for {sidecar.name}: {e}')
+    try:
+        return _flash_override_from_xmp_bytes(filepath.read_bytes())
+    except Exception as e:
+        print(f'Embedded XMP flash-override error for {filepath.name}: {e}')
+        return None
+
+
 def query_lightroom_ratings(catalog_path: str, filenames: list) -> dict:
     """Batch-lookup star ratings from a Lightroom catalog for the given filenames.
 
@@ -233,9 +272,22 @@ def _open_rotated(filepath: Path) -> Image.Image | None:
     return None
 
 
+def _preview_cache_key(filepath: Path) -> str:
+    """A cache key that changes if a file's location or content changes, so a
+    re-exported/edited file (even reusing an original's filename, e.g. a
+    Lightroom JPEG export named after its source CR3) doesn't reuse a stale
+    cached preview rendered from a different file."""
+    try:
+        stat = filepath.stat()
+        sig = f'{filepath.resolve()}:{stat.st_mtime_ns}:{stat.st_size}'
+    except OSError:
+        sig = str(filepath.resolve())
+    return hashlib.sha1(sig.encode()).hexdigest()
+
+
 def extract_preview(filepath: Path) -> Path | None:
     """Return path to a resized JPEG thumbnail. Returns None if extraction fails."""
-    cache_path = PREVIEW_CACHE_DIR / (filepath.stem + '_preview.jpg')
+    cache_path = PREVIEW_CACHE_DIR / (_preview_cache_key(filepath) + '_preview.jpg')
     if cache_path.exists():
         return cache_path
     try:
@@ -258,7 +310,11 @@ def composite_series_preview(entry: dict) -> Path | None:
     if not overlays:
         return extract_preview(Path(base['path']))
 
-    cache_path = PREVIEW_CACHE_DIR / (Path(base['path']).stem + f'_composite{len(overlays)}.jpg')
+    combined_sig = _preview_cache_key(Path(base['path'])) + ''.join(
+        _preview_cache_key(Path(overlay['path'])) for overlay in overlays
+    )
+    cache_key = hashlib.sha1(combined_sig.encode()).hexdigest()
+    cache_path = PREVIEW_CACHE_DIR / (cache_key + '_composite.jpg')
     if cache_path.exists():
         return cache_path
 
@@ -282,7 +338,7 @@ def composite_series_preview(entry: dict) -> Path | None:
 
 def extract_full(filepath: Path) -> Path | None:
     """Return path to a full-resolution rotation-corrected JPEG. Returns None on failure."""
-    cache_path = PREVIEW_CACHE_DIR / (filepath.stem + '_full.jpg')
+    cache_path = PREVIEW_CACHE_DIR / (_preview_cache_key(filepath) + '_full.jpg')
     if cache_path.exists():
         return cache_path
     try:
@@ -349,6 +405,11 @@ def process_file(filepath_str: str, skip_stability_check: bool = False) -> None:
         flash = False
         error = 'Could not read EXIF'
 
+    exif_flash = flash
+    flash_override = get_flash_override(filepath)
+    if flash_override is not None:
+        flash = flash_override
+
     preview_path = extract_preview(filepath)
 
     aspect = None
@@ -368,11 +429,13 @@ def process_file(filepath_str: str, skip_stability_check: bool = False) -> None:
         'filename': filepath.name,
         'path': str(filepath),
         'flash': flash,
+        'exif_flash': exif_flash,
         'timestamp': timestamp or '',
         'has_preview': preview_path is not None,
         'aspect': aspect,
         'error': error,
         'rating': rating,
+        'mtime': filepath.stat().st_mtime,
     }
 
     with state_lock:
@@ -386,30 +449,78 @@ def process_file(filepath_str: str, skip_stability_check: bool = False) -> None:
     print(f'Added: {filepath.name}  flash={flash}  ts={timestamp}  rating={rating}')
 
 
-def refresh_rating(filename: str) -> None:
-    """Re-derive a single already-tracked photo's rating (e.g. metadata was
-    written after the photo was first scanned) and notify clients if it changed."""
+def refresh_metadata(filename: str, full_rescan: bool = False) -> None:
+    """Re-derive a single already-tracked photo's metadata and notify clients
+    if anything changed.
+
+    full_rescan=True re-derives everything process_file would (EXIF flash/
+    timestamp, preview/aspect, rating, flash override) -- used when the photo
+    file itself was rewritten, e.g. re-exported from Lightroom after further
+    edits, since the pixel content and embedded metadata could both differ.
+    full_rescan=False (the default) only re-checks rating and the flash
+    override, which is all a sidecar .xmp change on its own could affect.
+    """
     with state_lock:
         photo = next((p for p in state['photos'] if p['filename'] == filename), None)
         catalog = state['lightroom_catalog']
     if not photo:
         return
 
-    rating = get_rating(Path(photo['path']), catalog)
+    filepath = Path(photo['path'])
+    if not filepath.is_file():
+        return
+
+    updated = {}
+    if full_rescan:
+        flash, timestamp = get_exif_info(filepath)
+        error = None
+        if flash is None:
+            flash = False
+            error = 'Could not read EXIF'
+        exif_flash = flash
+        flash_override = get_flash_override(filepath)
+        flash = flash_override if flash_override is not None else exif_flash
+
+        preview_path = extract_preview(filepath)
+        aspect = None
+        if preview_path:
+            try:
+                with Image.open(preview_path) as img:
+                    w, h = img.size
+                    aspect = round(w / h, 4) if h else None
+            except Exception:
+                pass
+
+        updated.update({
+            'flash': flash,
+            'exif_flash': exif_flash,
+            'timestamp': timestamp or '',
+            'has_preview': preview_path is not None,
+            'aspect': aspect,
+            'error': error,
+            'mtime': filepath.stat().st_mtime,
+        })
+    else:
+        flash_override = get_flash_override(filepath)
+        updated['flash'] = flash_override if flash_override is not None else photo['exif_flash']
+
+    updated['rating'] = get_rating(filepath, catalog)
 
     with state_lock:
-        if photo['rating'] == rating:
+        if all(photo.get(k) == v for k, v in updated.items()):
             return
-        photo['rating'] = rating
+        photo.update(updated)
+        if full_rescan:
+            state['photos'].sort(key=lambda x: x['timestamp'])
         state['series'] = compute_series(state['photos'])
 
-    notify_clients({'type': 'ratings_updated'})
-    print(f'Rating updated: {filename} -> {rating}')
+    notify_clients({'type': 'metadata_updated'})
+    print(f'Metadata refreshed: {filename} -> {updated}')
 
 
 def handle_modified(filepath_str: str) -> None:
     """React to a sidecar .xmp being written, or a photo file itself being
-    rewritten with new metadata (e.g. Lightroom's 'Save Metadata to File')."""
+    rewritten (e.g. re-exported from Lightroom after further edits)."""
     filepath = Path(filepath_str)
     if not filepath.is_file():
         return
@@ -419,14 +530,17 @@ def handle_modified(filepath_str: str) -> None:
 
     if filepath.suffix.lower() == '.xmp':
         matched = next((name for name in known_filenames if Path(name).stem == filepath.stem), None)
+        full_rescan = False
     elif filepath.name in known_filenames:
         matched = filepath.name
+        full_rescan = True
     else:
         matched = None
+        full_rescan = False
 
     if matched:
         wait_for_file_stable(filepath, timeout=5)
-        refresh_rating(matched)
+        refresh_metadata(matched, full_rescan=full_rescan)
 
 
 def lightroom_poll_loop() -> None:
@@ -455,7 +569,7 @@ def lightroom_poll_loop() -> None:
             if changed:
                 state['series'] = compute_series(state['photos'])
         if changed:
-            notify_clients({'type': 'ratings_updated'})
+            notify_clients({'type': 'metadata_updated'})
 
 
 class FolderHandler(FileSystemEventHandler):
@@ -634,4 +748,5 @@ def api_stream():
 
 if __name__ == '__main__':
     print('Tethering viewer: http://localhost:5001')
+    threading.Timer(1.0, lambda: webbrowser.open('http://localhost:5001')).start()
     app.run(port=5001, debug=False, threaded=True)
