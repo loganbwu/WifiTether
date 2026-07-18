@@ -36,7 +36,7 @@ CORS(app)
 
 PREVIEW_CACHE_DIR = Path('/tmp/tether_previews')
 PREVIEW_CACHE_DIR.mkdir(exist_ok=True)
-THUMB_MAX_PX = 800
+THUMB_MAX_PX = 1600
 
 RAW_EXTENSIONS = {'.cr3', '.cr2', '.nef', '.arw', '.raf', '.dng'}
 JPEG_EXTENSIONS = {'.jpg', '.jpeg', '.png'}
