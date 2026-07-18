@@ -743,7 +743,7 @@ button:hover {
   //   n>=4  -> MAX_ACTIVE_OVERLAYS (3), rotating
   var MAX_ACTIVE_OVERLAYS = 3;
   var CARD_ROTATION_MS = 3000;
-  var CARD_MAX_FPS = 10;
+  var CARD_MAX_FPS = 5;
   var CARD_REDRAW_INTERVAL_MS = 1000 / CARD_MAX_FPS;
   var lastCardDrawTime = 0;
   var cardAnimations = new Map();   // canvas -> rotation state, driven by tickCardAnimations
@@ -875,22 +875,39 @@ button:hover {
       inIdx: pool[Math.floor(Math.random() * pool.length)],   // random replacement
       startTime: null,
     };
+    state.steadyCanvas = null;   // active set just changed -- invalidate the cached steady layer
+  }
+
+  // The active overlays other than the one currently fading out don't change
+  // for the whole duration of a transition, so they're composited once into
+  // an offscreen canvas and reused every redraw, instead of re-compositing
+  // all of them from scratch on every frame.
+  function rebuildSteadyLayer(canvas, state) {
+    var sc = state.steadyCanvas || document.createElement('canvas');
+    sc.width = canvas.width;
+    sc.height = canvas.height;
+    var sctx = sc.getContext('2d');
+    sctx.globalCompositeOperation = 'source-over';
+    sctx.drawImage(state.imgs[0], 0, 0, sc.width, sc.height);
+    sctx.globalCompositeOperation = 'screen';
+    state.activeIndices.forEach(function (idx) {
+      if (idx === state.transition.outIdx) return;   // drawn separately each frame with its fading alpha
+      var img = state.imgs[idx];
+      if (img.complete && img.naturalWidth) sctx.drawImage(img, 0, 0, sc.width, sc.height);
+    });
+    sctx.globalCompositeOperation = 'source-over';
+    state.steadyCanvas = sc;
   }
 
   function drawRotatingCard(canvas, state, progress) {
+    if (!state.steadyCanvas || state.steadyCanvas.width !== canvas.width || state.steadyCanvas.height !== canvas.height) {
+      rebuildSteadyLayer(canvas, state);
+    }
     var ctx = canvas.getContext('2d');
     var t = state.transition;
     ctx.globalCompositeOperation = 'source-over';
-    ctx.drawImage(state.imgs[0], 0, 0, canvas.width, canvas.height);
+    ctx.drawImage(state.steadyCanvas, 0, 0);
     ctx.globalCompositeOperation = 'screen';
-    state.activeIndices.forEach(function (idx) {
-      if (idx === t.outIdx) return;   // drawn separately below with its fading alpha
-      var img = state.imgs[idx];
-      if (img.complete && img.naturalWidth) {
-        ctx.globalAlpha = 1;
-        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-      }
-    });
     var outImg = state.imgs[t.outIdx];
     if (outImg.complete && outImg.naturalWidth) {
       ctx.globalAlpha = 1 - progress;
@@ -906,6 +923,15 @@ button:hover {
   }
 
   function tickCardAnimations(timestamp) {
+    // Pause entirely (not just the draw) while the tab/window isn't visible.
+    // A transition's startTime is a real timestamp, so skipping ticks here
+    // doesn't desync anything -- progress just picks up from wherever real
+    // wall-clock time says it should be once the tab is visible again.
+    if (document.hidden) {
+      requestAnimationFrame(tickCardAnimations);
+      return;
+    }
+
     // Transition timing/state always advances every frame (cheap); the actual
     // canvas redraw is throttled to CARD_MAX_FPS, since a 3s crossfade doesn't
     // need 60fps smoothness and this is the expensive part per visible card.
