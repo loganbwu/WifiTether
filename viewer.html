@@ -10,7 +10,7 @@
 :root {
   --white: #fff;
   --grey: grey;
-  --text: #bbb;
+  --paragraph-text-color: #bbb;
   --pale-blue: #ADD8E6;
   --black: #111;
   --dark: #1a1a1a;
@@ -23,7 +23,7 @@
 body {
   font-family: Helvetica, sans-serif;
   background: var(--black);
-  color: var(--text);
+  color: var(--paragraph-text-color);
   margin: 0;
   padding: 0 clamp(1rem, 4vw, 4rem);
   min-height: 100vh;
@@ -275,6 +275,7 @@ button:hover {
 .viewer-canvas-wrap {
   flex: 1;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
   overflow: auto;
@@ -329,7 +330,10 @@ button:hover {
   flex-shrink: 0;
   display: flex;
   align-items: center;
-  gap: 4px;
+}
+
+.viewer-close-btn-label {
+  padding: 0 4px;
 }
 
 .viewer-close-btn:hover {
@@ -408,7 +412,7 @@ button:hover {
 .ctrl-base-name {
   font-size: 0.85em;
   font-family: 'Oswald', sans-serif;
-  color: var(--text);
+  color: var(--paragraph-text-color);
   margin: 0;
   word-break: break-all;
 }
@@ -463,10 +467,7 @@ button:hover {
     <div class="viewer-controls">
       <div class="viewer-header">
         <h2 id="viewer-title">Multiple Exposure</h2>
-        <button class="viewer-close-btn" id="viewer-close" aria-label="Close viewer">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-          Exit
-        </button>
+        <button class="viewer-close-btn" id="viewer-close" aria-label="Close viewer"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg><span class="viewer-close-btn-label">Exit</span></button>
       </div>
       <p class="ctrl-instructions">Hover to preview an overlay; click to enable it. Combine multiple exposures to preview the composite. Use ← → to navigate between series.</p>
       <div id="viewer-overlays-container"></div>
