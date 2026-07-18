@@ -655,6 +655,13 @@ button:hover {
         cards[i].style.width = Math.floor(naturalWidths[i] * scale) + 'px';
       });
     });
+
+    // Separate pass so all width writes above land before any layout-forcing
+    // clientWidth reads below -- interleaving them would force a reflow per card.
+    cards.forEach(function (card) {
+      var canvas = card.querySelector('.tether-card__img-wrap canvas');
+      if (canvas) resizeCardCanvas(canvas);
+    });
   }
 
   function cardAriaLabel(s) {
@@ -756,15 +763,13 @@ button:hover {
       if (canvas._thumbGen !== myGen) return;   // a newer render has superseded this one
       var base = imgs[0];
       if (!base.complete || !base.naturalWidth) return;
-      canvas.width = base.naturalWidth;
-      canvas.height = base.naturalHeight;
+      canvas._imgs = imgs;
 
       var activeCount = activeOverlayCount(s.overlays.length);
       if (activeCount > 0 && activeCount < s.overlays.length) {
         startCardRotation(canvas, imgs, activeCount);
-      } else {
-        drawStaticComposite(canvas, imgs);
       }
+      resizeCardCanvas(canvas);   // sets canvas.width/height to the card's actual displayed size and paints it
     }
 
     imgs.forEach(function (img, idx) {
@@ -772,6 +777,47 @@ button:hover {
       img.onerror = function () { loaded++; if (loaded === srcs.length) allLoaded(); };
       img.src = srcs[idx];
     });
+  }
+
+  // Renders at the canvas's actual displayed CSS size (scaled by devicePixelRatio
+  // for sharpness), not the source preview's resolution — thumbnails are shown
+  // small, and rotation redraws every layer every frame, so matching display
+  // size (which also tracks the pinch-zoom level) keeps that redraw cheap.
+  // Canvas width/height writes clear the drawing buffer, so this always
+  // repaints immediately after resizing using whatever state is available.
+  // Matches THUMB_MAX_PX in server.py — no point rendering the canvas larger
+  // than the source preview actually is, however far the gallery is zoomed in.
+  var CARD_CANVAS_MAX_PX = 1600;
+
+  function resizeCardCanvas(canvas) {
+    var imgs = canvas._imgs;
+    if (!imgs) return;
+    var base = imgs[0];
+    if (!base.complete || !base.naturalWidth) return;
+    var displayWidth = canvas.clientWidth || (canvas.parentElement && canvas.parentElement.clientWidth) || 0;
+    if (!displayWidth) return;
+    var dpr = window.devicePixelRatio || 1;
+    var targetWidth = Math.max(1, Math.round(displayWidth * dpr));
+    var targetHeight = Math.max(1, Math.round(targetWidth * base.naturalHeight / base.naturalWidth));
+    var overCap = Math.max(targetWidth, targetHeight) / CARD_CANVAS_MAX_PX;
+    if (overCap > 1) {
+      targetWidth = Math.max(1, Math.round(targetWidth / overCap));
+      targetHeight = Math.max(1, Math.round(targetHeight / overCap));
+    }
+    if (canvas.width === targetWidth && canvas.height === targetHeight) return;
+    canvas.width = targetWidth;
+    canvas.height = targetHeight;
+
+    var state = cardAnimations.get(canvas);
+    if (state) {
+      var progress = 0;
+      if (state.transition && state.transition.startTime !== null) {
+        progress = Math.min(1, (performance.now() - state.transition.startTime) / CARD_ROTATION_MS);
+      }
+      drawRotatingCard(canvas, state, progress);
+    } else {
+      drawStaticComposite(canvas, imgs);
+    }
   }
 
   function drawStaticComposite(canvas, imgs) {
