@@ -742,8 +742,30 @@ button:hover {
   //   n=2-3 -> n-1 (always one fewer than the total, rotating)
   //   n>=4  -> MAX_ACTIVE_OVERLAYS (3), rotating
   var MAX_ACTIVE_OVERLAYS = 3;
-  var CARD_ROTATION_MS = 1000;
+  var CARD_ROTATION_MS = 3000;
+  var CARD_MAX_FPS = 10;
+  var CARD_REDRAW_INTERVAL_MS = 1000 / CARD_MAX_FPS;
+  var lastCardDrawTime = 0;
   var cardAnimations = new Map();   // canvas -> rotation state, driven by tickCardAnimations
+
+  // Only cards actually scrolled into view get redrawn each frame — an
+  // off-screen card's rotation state still advances (so it isn't stuck
+  // showing stale overlays whenever it does scroll into view) but skips the
+  // canvas compositing work, which is what actually costs frame rate.
+  var visibleCanvases = new Set();
+  var cardVisibilityObserver = new IntersectionObserver(function (entries) {
+    entries.forEach(function (entry) {
+      if (entry.isIntersecting) visibleCanvases.add(entry.target);
+      else visibleCanvases.delete(entry.target);
+    });
+  }, { rootMargin: '200px' });
+
+  function stopCardRotation(canvas) {
+    if (cardAnimations.delete(canvas)) {
+      cardVisibilityObserver.unobserve(canvas);
+      visibleCanvases.delete(canvas);
+    }
+  }
 
   function activeOverlayCount(n) {
     if (n === 0) return 0;
@@ -752,7 +774,7 @@ button:hover {
 
   function renderCardThumbnail(canvas, s) {
     var myGen = (canvas._thumbGen = (canvas._thumbGen || 0) + 1);
-    cardAnimations.delete(canvas);   // stop any prior rotation before rebuilding
+    stopCardRotation(canvas);   // stop any prior rotation before rebuilding
 
     var photos = [s.base].concat(s.overlays);
     var srcs = photos.map(function (p) { return previewUrl(p.filename) + '?v=' + encodeURIComponent(p.mtime); });
@@ -839,6 +861,7 @@ button:hover {
     var state = { imgs: imgs, activeIndices: activeIndices, transition: null };
     beginNextCardTransition(state);
     cardAnimations.set(canvas, state);
+    cardVisibilityObserver.observe(canvas);
   }
 
   function beginNextCardTransition(state) {
@@ -883,12 +906,18 @@ button:hover {
   }
 
   function tickCardAnimations(timestamp) {
+    // Transition timing/state always advances every frame (cheap); the actual
+    // canvas redraw is throttled to CARD_MAX_FPS, since a 3s crossfade doesn't
+    // need 60fps smoothness and this is the expensive part per visible card.
+    var shouldDraw = (timestamp - lastCardDrawTime) >= CARD_REDRAW_INTERVAL_MS;
+    if (shouldDraw) lastCardDrawTime = timestamp;
+
     cardAnimations.forEach(function (state, canvas) {
-      if (!canvas.isConnected) { cardAnimations.delete(canvas); return; }
+      if (!canvas.isConnected) { stopCardRotation(canvas); return; }
       if (!state.transition) return;
       if (state.transition.startTime === null) state.transition.startTime = timestamp;
       var progress = Math.min(1, (timestamp - state.transition.startTime) / CARD_ROTATION_MS);
-      drawRotatingCard(canvas, state, progress);
+      if (shouldDraw && visibleCanvases.has(canvas)) drawRotatingCard(canvas, state, progress);
       if (progress >= 1) {
         var doneIdx = state.activeIndices.indexOf(state.transition.outIdx);
         if (doneIdx !== -1) state.activeIndices.splice(doneIdx, 1);
