@@ -1,18 +1,67 @@
 # WifiTether
 
-A local-only utility for reviewing shots in real time while tethering. As the camera writes CR3 (or JPEG) files to a folder, the viewer automatically detects flash vs. no-flash shots, groups them into series, and composites them with screen blending.
+A local-only utility for reviewing shots in real time while tethering. It has two tools that work together:
+
+- **FTP server** (`rye run ftp`): receives photos sent over wifi from the camera (e.g. Canon EOS R3) and saves them to a folder.
+- **Viewer** (`rye run wifitether`): watches that folder in the browser. It detects flash vs. no-flash shots as they arrive, groups them into series, and composites them with screen blending.
+
+The viewer works with any folder, so you can also use it without the FTP server (e.g. with USB tethering or a card reader).
 
 **Requirements:**
 - Python 3.12+
 - [rye](https://rye.astral.sh/)
+- For wifi upload: the Mac and camera on the same private network (e.g. your phone's hotspot)
 
-**Setup:**
+**Setup (once):**
 ```bash
 rye sync
-rye run wifitether
 ```
 
-Open **http://localhost:5001**, enter the shoot folder path (e.g. `~/Pictures/2026/2026-05-07`), and click **Watch**.
+## Usage
+
+Both tools default to today's shoot folder, `~/Pictures/YYYY/YYYY-MM-DD`, so with no arguments the camera uploads to the folder the viewer suggests.
+
+**1. Start the FTP server** (terminal 1):
+```bash
+rye run ftp
+```
+It creates today's folder if needed and prints something like:
+```
+   Host:          172.20.10.2
+   Port:          2121
+   Passive ports: 60000-60099
+   Upload folder: /Users/you/Pictures/2026/2026-05-07
+   Username:      anonymous (no password)
+```
+Start this first: it creates the folder, and the viewer can't watch a folder that doesn't exist yet.
+
+**2. Point the camera at it.** In the camera's FTP transfer settings (menu names vary by model), set:
+- Server address: the **Host** IP printed above
+- Port: **2121**
+- Passive mode: **on**
+- Login: **anonymous**
+- Proxy: off; target folder: root
+
+Turn on automatic transfer after shooting if you want every shot sent as you take it. The Mac's IP address can change when you rejoin a network, so check the printed Host each session.
+
+**3. Start the viewer** (terminal 2):
+```bash
+rye run wifitether
+```
+This opens **http://localhost:5001**. The folder box already shows today's folder. Click **Watch**, and new shots appear as they arrive. Any subfolders the camera creates are picked up too.
+
+**Stopping:** press Ctrl+C in each terminal. If the FTP server says the port is already in use, an old copy is still running. Stop it with `pkill -f ftp_server.py`.
+
+**Options:**
+```bash
+rye run ftp --dir ~/Pictures/some-other-folder   # upload somewhere else
+rye run ftp --port 2122                          # use a different port
+```
+If you change `--dir`, enter the same folder in the viewer's folder box, or click **Browse** to choose it.
+
+**Security:** the FTP server lets anyone on the network log in without a password and upload, change or delete files in the upload folder. Only run it on a private network you control, never on shared or public wifi.
+
+## Viewer details
 
 **How it works:**
 - Photos taken **with flash** are treated as base photos.
@@ -31,15 +80,7 @@ Some flashes (e.g. off-camera/wireless triggers) never get recorded in the camer
 - Ratings are read from a Lightroom catalog (`.lrcat`) if you point the app at one, falling back to a sidecar `.xmp` or embedded XMP otherwise.
 - Rating changes made after a photo is loaded are picked up automatically — sidecar/embedded XMP edits are detected instantly, and the Lightroom catalog is polled every 5 seconds.
 
-**Wifi upload from the camera (FTP):**
-For cameras that send shots over FTP (e.g. Canon EOS R3), run a local FTP server in a second terminal:
-```bash
-rye run ftp                                  # uploads to today's folder, e.g. ~/Pictures/2026/2026-05-07
-rye run ftp --dir ~/Pictures/some-other-folder --port 2121
-```
-By default it uploads to today's shoot folder (creating it if needed), which is also the viewer's default folder, so running both with no arguments just works. It prints the host IP and port to enter in the camera's FTP settings (anonymous login, passive mode, passive ports 60000–60099). Point the viewer at the same folder — the camera's own subfolders are picked up by the recursive scan. Anonymous users have full write access, so only run it on a private network such as your own hotspot. Stop it with Ctrl+C, or `pkill -f ftp_server.py`.
-
-**Testing:**
+## Testing
 ```bash
 rye run test
 ```
