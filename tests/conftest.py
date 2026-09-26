@@ -49,12 +49,14 @@ def clean_state():
         state['photos'] = []
         state['series'] = []
         state['lightroom_catalog'] = None
+        state['overlays'] = True   # most tests exercise series grouping
     yield
     with state_lock:
         state['folder'] = None
         state['photos'] = []
         state['series'] = []
         state['lightroom_catalog'] = None
+        state['overlays'] = True   # most tests exercise series grouping
 
 
 @pytest.fixture

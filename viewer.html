@@ -298,6 +298,10 @@ button:hover {
 #viewer-canvas.panning { cursor: grabbing; }
 #viewer-canvas.zoom-transition { transition: transform 0.2s ease-out; }
 
+/* Overlay-specific UI, hidden unless the server was started with --overlays */
+body.no-overlays .overlay-only,
+body.no-overlays .tether-card__badge { display: none; }
+
 .viewer-rating {
   display: flex;
   align-items: center;
@@ -473,7 +477,7 @@ button:hover {
 <div id="gallery"></div>
 
 <!-- Viewer modal -->
-<div id="viewer-modal" role="dialog" aria-modal="true" aria-label="Multiple exposure viewer">
+<div id="viewer-modal" role="dialog" aria-modal="true" aria-label="Photo viewer">
   <div class="viewer-content">
     <div class="viewer-canvas-wrap">
       <canvas id="viewer-canvas"></canvas>
@@ -483,7 +487,7 @@ button:hover {
         <h2 id="viewer-title">Multiple Exposure</h2>
         <button class="viewer-close-btn" id="viewer-close" aria-label="Close viewer"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg><span class="viewer-close-btn-label">Exit</span></button>
       </div>
-      <p class="ctrl-instructions">Hover to preview an overlay; click to enable it. Combine multiple exposures to preview the composite. Use ← → to navigate between series, 1–5 to rate the base photo (` to clear), G to return to the gallery. Pinch to zoom, two-finger swipe to pan, Space to fit to window.</p>
+      <p class="ctrl-instructions"><span class="overlay-only">Hover to preview an overlay; click to enable it. Combine multiple exposures to preview the composite. </span>Use ← → to navigate, 1–5 to rate (` to clear), G to return to the gallery, F for full screen. Pinch to zoom, two-finger swipe to pan, Space to fit to window.</p>
       <div id="viewer-overlays-container"></div>
     </div>
   </div>
@@ -1625,6 +1629,25 @@ button:hover {
   document.getElementById('viewer-modal').addEventListener('click', function (e) {
     if (e.target === this) closeViewer();
   });
+  // ---------------------------------------------------------------------------
+  // Full screen (F, in both gallery and viewer — ported from FastCuller)
+  // ---------------------------------------------------------------------------
+  function toggleFullscreen() {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen().catch(function () {});
+    } else {
+      document.exitFullscreen();
+    }
+  }
+
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'f' && e.key !== 'F') return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    e.preventDefault();
+    toggleFullscreen();
+  });
+
   document.addEventListener('keydown', function (e) {
     if (!viewerOpen) return;
     if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -1664,6 +1687,7 @@ button:hover {
   fetch('/api/status')
     .then(function (r) { return r.json(); })
     .then(function (s) {
+      document.body.classList.toggle('no-overlays', !s.overlays);
       if (s.folder) {
         document.getElementById('folder-input').value = s.folder;
         fetchAndRender();

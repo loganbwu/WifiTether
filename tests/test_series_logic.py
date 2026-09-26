@@ -111,3 +111,14 @@ def test_overlay_goes_to_most_recent_base():
     result = compute_series(photos)
     assert result[0]['overlays'] == []
     assert result[1]['overlays'][0]['filename'] == 'ov1.jpg'
+
+
+def test_overlays_off_gives_every_photo_its_own_series():
+    photos = [
+        photo('stray.jpg', False, '2026:01:01 09:59:59'),
+        photo('base.jpg',  True,  '2026:01:01 10:00:00'),
+        photo('ov1.jpg',   False, '2026:01:01 10:00:01'),
+    ]
+    result = compute_series(photos, overlays=False)
+    assert [s['base']['filename'] for s in result] == ['stray.jpg', 'base.jpg', 'ov1.jpg']
+    assert all(s['overlays'] == [] for s in result)

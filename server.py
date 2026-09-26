@@ -8,6 +8,7 @@ Usage:
     # Open http://localhost:5001
 """
 
+import argparse
 import functools
 import io
 import json
@@ -48,6 +49,7 @@ state = {
     'photos': [],   # [{filename, path, flash, timestamp}] sorted by timestamp
     'series': [],   # [{base: photo, overlays: [photo, ...]}]
     'lightroom_catalog': None,   # path to a .lrcat, or None
+    'overlays': False,   # group no-flash shots onto flash bases (--overlays)
 }
 
 LIGHTROOM_POLL_INTERVAL_SEC = 5
@@ -385,10 +387,12 @@ def wait_for_file_stable(filepath: Path, timeout: int = 15) -> bool:
     return False
 
 
-def compute_series(photos: list) -> list:
+def compute_series(photos: list, overlays: bool = True) -> list:
+    """Group photos into series. With overlays off, every photo is its own
+    series; with them on, no-flash shots attach to the preceding flash shot."""
     has_flash = any(not p.get('error') and p['flash'] for p in photos)
 
-    if not has_flash:
+    if not overlays or not has_flash:
         return [{'base': p, 'overlays': []} for p in photos]
 
     series = []
@@ -492,7 +496,7 @@ def process_file(filepath_str: str, skip_stability_check: bool = False) -> None:
             return
         state['photos'].append(photo)
         state['photos'].sort(key=lambda x: (x['timestamp'], x['filename']))
-        state['series'] = compute_series(state['photos'])
+        state['series'] = compute_series(state['photos'], state['overlays'])
 
     notify_clients({'type': 'update', 'filename': rel_name})
     print(f'Added: {rel_name}  flash={flash}  ts={timestamp}  rating={rating}')
@@ -545,7 +549,7 @@ def refresh_metadata(filename: str, full_rescan: bool = False) -> None:
         photo.update(updated)
         if full_rescan:
             state['photos'].sort(key=lambda x: (x['timestamp'], x['filename']))
-        state['series'] = compute_series(state['photos'])
+        state['series'] = compute_series(state['photos'], state['overlays'])
 
     notify_clients({'type': 'metadata_updated'})
     print(f'Metadata refreshed: {filename} -> {updated}')
@@ -602,7 +606,7 @@ def _lightroom_poll_once() -> None:
                 photo['rating'] = new_rating
                 changed = True
         if changed:
-            state['series'] = compute_series(state['photos'])
+            state['series'] = compute_series(state['photos'], state['overlays'])
     if changed:
         notify_clients({'type': 'metadata_updated'})
 
@@ -695,6 +699,7 @@ def api_status():
         'folder': folder,
         'photo_count': photo_count,
         'lightroom_catalog': lightroom_catalog,
+        'overlays': state['overlays'],
         'default_folder': '~/' + str(default_shoot_folder().relative_to(Path.home())),
     })
 
@@ -825,6 +830,14 @@ def api_stream():
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Tethering viewer')
+    parser.add_argument('--overlays', action='store_true',
+                        help='group no-flash shots as overlays on the preceding flash shot '
+                             'and composite them (multiple exposure preview)')
+    args = parser.parse_args()
+    state['overlays'] = args.overlays
+
     print('Tethering viewer: http://localhost:5001')
+    print(f'Overlays: {"on" if args.overlays else "off (start with --overlays to enable)"}')
     threading.Timer(1.0, lambda: webbrowser.open('http://localhost:5001')).start()
     app.run(port=5001, debug=False, threaded=True)

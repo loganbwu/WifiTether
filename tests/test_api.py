@@ -213,3 +213,8 @@ def test_stream_registers_and_unregisters_sse_client(client):
     response.close()          # closes the generator -> triggers its cleanup path
 
     assert len(sse_clients) == before
+
+
+def test_status_reports_overlays_setting(client):
+    state['overlays'] = False   # reset by the clean_state fixture
+    assert client.get('/api/status').get_json()['overlays'] is False
