@@ -3,7 +3,7 @@
 A local-only utility for reviewing shots in real time while tethering. It has two tools that work together:
 
 - **FTP server** (`rye run ftp`): receives photos sent over wifi from the camera (e.g. Canon EOS R3) and saves them to a folder.
-- **Viewer** (`rye run wifitether`): watches that folder in the browser. It detects flash vs. no-flash shots as they arrive, groups them into series, and composites them with screen blending.
+- **Viewer** (`rye run wifitether`): watches that folder in the browser and shows new shots as they arrive. With `--overlays`, it also detects flash vs. no-flash shots, groups them into series, and composites them with screen blending.
 
 The viewer works with any folder, so you can also use it without the FTP server (e.g. with USB tethering or a card reader).
 
@@ -27,15 +27,21 @@ rye run ftp
 ```
 It creates today's folder if needed and prints something like:
 ```
+   Wi-Fi network: My iPhone
    Host:          172.20.10.2
    Port:          2121
    Passive ports: 60000-60099
    Upload folder: /Users/you/Pictures/2026/2026-05-07
    Username:      anonymous (no password)
-```
-Start this first: it creates the folder, and the viewer can't watch a folder that doesn't exist yet.
 
-**2. Point the camera at it.** In the camera's FTP transfer settings (menu names vary by model), set:
+Connect the camera to My iPhone
+Point the camera at 172.20.10.2:2121
+```
+Start this first: it creates the folder, and the viewer can't watch a folder that doesn't exist yet. Check the Wi-Fi network is the one you expect: if the Mac has joined a different network, the camera won't be able to reach it. If macOS won't reveal the network name, it shows "unknown" and just reminds you to use the same network as the Mac.
+
+**2. Point the camera at it.** 
+
+On a Canon R3, in the menu, go to connection settings > Network settings > Connection settings. If not previously configured, set:
 - Server address: the **Host** IP printed above
 - Port: **2121**
 - Passive mode: **on**
@@ -56,6 +62,7 @@ This opens **http://localhost:5001**. The folder box already shows today's folde
 ```bash
 rye run ftp --dir ~/Pictures/some-other-folder   # upload somewhere else
 rye run ftp --port 2122                          # use a different port
+rye run wifitether --overlays                    # turn on multiple exposure overlays (see below)
 ```
 If you change `--dir`, enter the same folder in the viewer's folder box, or click **Browse** to choose it.
 
@@ -64,6 +71,7 @@ If you change `--dir`, enter the same folder in the viewer's folder box, or clic
 ## Viewer details
 
 **How it works:**
+- By default, every photo gets its own card in the gallery. The overlay behaviour below only applies when the viewer is started with `rye run wifitether --overlays`.
 - Photos taken **with flash** are treated as base photos.
 - Photos taken **without flash** are treated as overlays, associated with the most recent base.
 - The gallery shows one card per series: the base photo's thumbnail is a screen-blended composite of the base and all its overlays, with a badge showing the overlay count.
@@ -76,9 +84,27 @@ If you change `--dir`, enter the same folder in the viewer's folder box, or clic
 Some flashes (e.g. off-camera/wireless triggers) never get recorded in the camera's own EXIF Flash tag, which can misclassify a base photo as an overlay. Add a `flash_fired` or `flash_not_fired` keyword (e.g. in Lightroom) to override the detected value for a photo — picked up live via a sidecar `.xmp` or embedded XMP, no restart needed.
 
 **Star ratings:**
+- In the viewer, rate the series' base photo with the star buttons or the `1`–`5` keys (`` ` `` or `0` clears it; clicking the current star also clears it). The rating is written to the photo's sidecar `.xmp` (e.g. `IMG_0001.xmp`), created if needed. Other tags already in the sidecar, such as Lightroom edits and keywords, are kept.
 - The gallery can be filtered to series whose base photo is rated N stars and up, using the star row above the gallery.
-- Ratings are read from a Lightroom catalog (`.lrcat`) if you point the app at one, falling back to a sidecar `.xmp` or embedded XMP otherwise.
+- Ratings are read from a Lightroom catalog (`.lrcat`) if you point the app at one, falling back to a sidecar `.xmp` or embedded XMP otherwise. So if a catalog is set and already has a rating for the photo, that rating still wins over one set in the viewer, and the viewer shows a warning. Lightroom only picks up sidecar ratings when you use Metadata > Read Metadata from Files (or when importing).
 - Rating changes made after a photo is loaded are picked up automatically — sidecar/embedded XMP edits are detected instantly, and the Lightroom catalog is polled every 5 seconds.
+
+**Viewer shortcuts** (zoom and pan behave as in FastCuller):
+
+| Key / gesture | Action |
+|---------------|--------|
+| `←` / `→` | Previous / next series |
+| `1`–`5` | Rate the base photo N stars |
+| `` ` `` or `0` | Clear the base photo's rating |
+| `G` | Back to the gallery |
+| `F` | Toggle full screen (also works in the gallery) |
+| `Space` | Fit the image to the window (reset zoom) |
+| `Esc` | Reset zoom if zoomed in, otherwise back to the gallery |
+| Pinch (or `Cmd/Ctrl` + scroll) | Zoom in/out, centred on the cursor |
+| Two-finger swipe, or drag | Pan while zoomed in |
+| Double-click | Zoom in to that point, or reset if already zoomed |
+
+Zoom resets when the viewer is opened from the gallery, but carries over when moving between series or when a new shot arrives, so you can check focus in the same crop.
 
 ## Testing
 ```bash
