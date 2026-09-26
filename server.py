@@ -183,6 +183,48 @@ def get_file_rating(filepath: Path) -> int | None:
         return None
 
 
+_XMP_RATING_ELEMENT_RE = re.compile(r'(<xmp:Rating>\s*)-?\d+(\s*</xmp:Rating>)')
+_XMP_RATING_ATTR_RE = re.compile(r'(xmp:Rating\s*=\s*")-?\d+(")')
+_XMP_NS = 'xmlns:xmp="http://ns.adobe.com/xap/1.0/"'
+
+
+def write_xmp_rating(filepath: Path, rating: int) -> None:
+    """Write xmp:Rating to the photo's sidecar .xmp (ported from FastCuller).
+
+    Creates the sidecar if absent. Otherwise updates the rating in place,
+    preserving every other tag (Lightroom develop settings, keywords, etc.).
+    """
+    sidecar = filepath.with_suffix('.xmp')
+    if not sidecar.exists():
+        sidecar.write_text(
+            '<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>\n'
+            '<x:xmpmeta xmlns:x="adobe:ns:meta/">\n'
+            ' <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">\n'
+            '  <rdf:Description rdf:about=""\n'
+            f'    {_XMP_NS}>\n'
+            f'   <xmp:Rating>{rating}</xmp:Rating>\n'
+            '  </rdf:Description>\n'
+            ' </rdf:RDF>\n'
+            '</x:xmpmeta>\n'
+            '<?xpacket end="w"?>'
+        )
+        return
+
+    content = sidecar.read_text()
+    if _XMP_RATING_ATTR_RE.search(content):
+        content = _XMP_RATING_ATTR_RE.sub(rf'\g<1>{rating}\g<2>', content, count=1)
+    elif _XMP_RATING_ELEMENT_RE.search(content):
+        content = _XMP_RATING_ELEMENT_RE.sub(rf'\g<1>{rating}\g<2>', content, count=1)
+    else:
+        # Add as an attribute on the first rdf:Description, which works whether
+        # that element is self-closing (common in Lightroom sidecars) or not.
+        attrs = f'xmp:Rating="{rating}"'
+        if 'xmlns:xmp=' not in content:
+            attrs = f'{_XMP_NS}\n    {attrs}'
+        content = content.replace('<rdf:Description', f'<rdf:Description\n    {attrs}', 1)
+    sidecar.write_text(content)
+
+
 # A Lightroom keyword lets a photographer manually correct flash detection —
 # e.g. an off-camera/wireless-triggered flash that the camera's own EXIF Flash
 # tag never records as having fired. Keywords round-trip through dc:subject
@@ -696,6 +738,27 @@ def api_watch():
     threading.Thread(target=scan_folder, args=(folder,), daemon=True).start()
     notify_clients({'type': 'folder_changed', 'folder': folder})
     return jsonify({'ok': True, 'folder': folder})
+
+
+@app.route('/api/rate', methods=['POST'])
+def api_rate():
+    data = request.get_json(force=True)
+    filename = data.get('filename')
+    rating = data.get('rating')
+    if not isinstance(rating, int) or not 0 <= rating <= 5:
+        return jsonify({'error': 'Rating must be an integer from 0 to 5'}), 400
+
+    with state_lock:
+        photo = next((p for p in state['photos'] if p['filename'] == filename), None)
+    if not photo:
+        return jsonify({'error': f'Unknown photo: {filename}'}), 404
+
+    write_xmp_rating(Path(photo['path']), rating)
+    # Update now rather than waiting for the watcher to notice the sidecar
+    refresh_metadata(filename)
+    with state_lock:
+        effective = photo.get('rating')
+    return jsonify({'ok': True, 'rating': effective})
 
 
 @app.route('/api/series')

@@ -278,7 +278,8 @@ button:hover {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  overflow: auto;
+  overflow: hidden;
+  touch-action: none;
   padding: 20px;
   background: #0a0a0a;
 }
@@ -288,6 +289,19 @@ button:hover {
   max-height: calc(100vh - 40px);
   object-fit: contain;
   display: block;
+  user-select: none;
+  transform-origin: center center;
+  will-change: transform;
+}
+
+#viewer-canvas.zoomed { cursor: grab; }
+#viewer-canvas.panning { cursor: grabbing; }
+#viewer-canvas.zoom-transition { transition: transform 0.2s ease-out; }
+
+.viewer-rating {
+  display: flex;
+  align-items: center;
+  gap: 2px;
 }
 
 .viewer-controls {
@@ -469,7 +483,7 @@ button:hover {
         <h2 id="viewer-title">Multiple Exposure</h2>
         <button class="viewer-close-btn" id="viewer-close" aria-label="Close viewer"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg><span class="viewer-close-btn-label">Exit</span></button>
       </div>
-      <p class="ctrl-instructions">Hover to preview an overlay; click to enable it. Combine multiple exposures to preview the composite. Use ← → to navigate between series.</p>
+      <p class="ctrl-instructions">Hover to preview an overlay; click to enable it. Combine multiple exposures to preview the composite. Use ← → to navigate between series, 1–5 to rate the base photo (` to clear), G to return to the gallery. Pinch to zoom, two-finger swipe to pan, Space to fit to window.</p>
       <div id="viewer-overlays-container"></div>
     </div>
   </div>
@@ -555,6 +569,14 @@ button:hover {
           if (mySeq !== fetchSeq) return;   // a newer request has already resolved; discard
           currentSeries = series;
           renderGallery(series);
+          // Pick up rating changes made elsewhere (e.g. in Lightroom)
+          if (viewerOpen && viewerSeries) {
+            var open = series.find(function (s) { return s.base.filename === viewerSeries.base.filename; });
+            if (open) {
+              viewerSeries.base.rating = open.base.rating;
+              updateViewerRatingStars();
+            }
+          }
           if (!skipJump && viewerOpen && newestFilename) {
             jumpToNewest(series);
           }
@@ -1076,12 +1098,14 @@ button:hover {
   function openViewer(series, overlayIdx, enableAll) {
     if (!viewerOpen) {
       viewerLastFocused = document.activeElement;
+      // Zoom/pan resets when opening from the gallery, but carries over when
+      // moving between series (e.g. checking focus in the same crop)
+      resetZoom();
     }
     viewerOpen = true;
     viewerSeries = series;
     viewerBaseImg = null;
     viewerOverlayImgs = [];
-    setViewerZoom(1);
     viewerSettings = series.overlays.map(function (_, i) {
       var on = enableAll ? true : (i === overlayIdx);
       return {
@@ -1171,6 +1195,27 @@ button:hover {
     baseName.className = 'ctrl-base-name';
     baseName.textContent = series.base.filename;
     container.appendChild(baseName);
+
+    var ratingRow = document.createElement('div');
+    ratingRow.className = 'viewer-rating';
+    ratingRow.setAttribute('role', 'group');
+    ratingRow.setAttribute('aria-label', 'Rate base photo');
+    var baseRating = series.base.rating || 0;
+    for (var n = 1; n <= 5; n++) {
+      var star = document.createElement('button');
+      star.type = 'button';
+      star.className = 'rating-star' + (n <= baseRating ? ' active' : '');
+      star.textContent = '★';
+      star.setAttribute('aria-label', 'Rate ' + n + ' star' + (n > 1 ? 's' : ''));
+      star.dataset.value = String(n);
+      star.addEventListener('click', function () {
+        var value = parseInt(this.dataset.value, 10);
+        // Clicking the current rating clears it, same as the gallery filter
+        rateViewerBase(value === (viewerSeries.base.rating || 0) ? 0 : value);
+      });
+      ratingRow.appendChild(star);
+    }
+    container.appendChild(ratingRow);
 
     if (series.overlays.length === 0) return;
 
@@ -1267,6 +1312,10 @@ button:hover {
         if (idx === 0) {
           canvas.width = img.naturalWidth || 800;
           canvas.height = img.naturalHeight || 600;
+          // The new photo may have a different aspect ratio, so the
+          // carried-over pan could now be out of bounds
+          clampPan();
+          applyZoomTransform();
         }
         if (loaded === srcs.length) {
           viewerBaseImg = imgs[0];
@@ -1338,20 +1387,151 @@ button:hover {
     ctx.globalCompositeOperation = 'source-over';
   }
 
+  // ---------------------------------------------------------------------------
+  // Viewer zoom / pan (ported from FastCuller)
+  // ---------------------------------------------------------------------------
+  // Trackpad pinch is delivered to browsers as a `wheel` event with ctrlKey
+  // set to true (Chrome, Firefox and Safari all do this on macOS), while a
+  // two-finger swipe is a plain `wheel` event with deltaX/deltaY set.
   var VIEWER_ZOOM_MIN = 1;
   var VIEWER_ZOOM_MAX = 8;
+  var DBLCLICK_ZOOM = 2.5;
 
-  function setViewerZoom(zoom) {
-    viewerZoom = Math.min(VIEWER_ZOOM_MAX, Math.max(VIEWER_ZOOM_MIN, zoom));
-    document.getElementById('viewer-canvas').style.transform = 'scale(' + viewerZoom + ')';
+  var viewerPanX = 0, viewerPanY = 0;
+  var viewerPanStart = null;   // set while dragging with the mouse
+  var zoomTransTimer = null;
+
+  var viewerCanvas = document.getElementById('viewer-canvas');
+  var viewerCanvasWrap = document.querySelector('.viewer-canvas-wrap');
+
+  function applyZoomTransform() {
+    viewerCanvas.style.transform = 'translate(' + viewerPanX + 'px, ' + viewerPanY + 'px) scale(' + viewerZoom + ')';
+    viewerCanvas.classList.toggle('zoomed', viewerZoom > 1.001);
   }
 
-  // Pinch/ctrl+wheel zooms the image itself rather than the browser page.
+  function clampPan() {
+    if (viewerZoom <= 1) { viewerPanX = 0; viewerPanY = 0; return; }
+    var wrapRect = viewerCanvasWrap.getBoundingClientRect();
+    var maxX = Math.max(0, (viewerCanvas.offsetWidth * viewerZoom - wrapRect.width) / 2);
+    var maxY = Math.max(0, (viewerCanvas.offsetHeight * viewerZoom - wrapRect.height) / 2);
+    viewerPanX = Math.min(maxX, Math.max(-maxX, viewerPanX));
+    viewerPanY = Math.min(maxY, Math.max(-maxY, viewerPanY));
+  }
+
+  function animateNextZoom() {
+    viewerCanvas.classList.add('zoom-transition');
+    clearTimeout(zoomTransTimer);
+    zoomTransTimer = setTimeout(function () { viewerCanvas.classList.remove('zoom-transition'); }, 220);
+  }
+
+  function resetZoom() {
+    viewerZoom = 1; viewerPanX = 0; viewerPanY = 0;
+    applyZoomTransform();
+  }
+
+  function resetZoomAnimated() {
+    animateNextZoom();
+    resetZoom();
+  }
+
+  // Zooms so that the point under (clientX, clientY) stays fixed on screen.
+  function zoomAt(clientX, clientY, newZoom, animated) {
+    newZoom = Math.min(VIEWER_ZOOM_MAX, Math.max(VIEWER_ZOOM_MIN, newZoom));
+    if (Math.abs(newZoom - viewerZoom) < 0.001) return;
+    var rect = viewerCanvas.getBoundingClientRect();
+    var cx = rect.left + rect.width / 2;
+    var cy = rect.top + rect.height / 2;
+    var ratio = 1 - newZoom / viewerZoom;
+    viewerPanX += (clientX - cx) * ratio;
+    viewerPanY += (clientY - cy) * ratio;
+    viewerZoom = newZoom;
+    clampPan();
+    if (animated) animateNextZoom();
+    applyZoomTransform();
+  }
+
+  // Listens on the whole document so a pinch anywhere in the viewer zooms the
+  // image rather than the browser page; panning only applies over the image
+  // area so the controls panel can still scroll normally.
   document.addEventListener('wheel', function (e) {
-    if (!e.ctrlKey || !viewerOpen) return;
-    e.preventDefault();
-    setViewerZoom(viewerZoom * Math.pow(1.05, -e.deltaY));
+    if (!viewerOpen) return;
+    if (e.ctrlKey) {
+      e.preventDefault();
+      zoomAt(e.clientX, e.clientY, viewerZoom * Math.exp(-e.deltaY * 0.02), false);
+    } else if (viewerZoom > 1 && viewerCanvasWrap.contains(e.target)) {
+      e.preventDefault();
+      viewerPanX -= e.deltaX;
+      viewerPanY -= e.deltaY;
+      clampPan();
+      applyZoomTransform();
+    }
   }, { passive: false });
+
+  viewerCanvas.addEventListener('dblclick', function (e) {
+    e.preventDefault();
+    if (viewerZoom > 1.01) {
+      resetZoomAnimated();
+    } else {
+      zoomAt(e.clientX, e.clientY, DBLCLICK_ZOOM, true);
+    }
+  });
+
+  viewerCanvas.addEventListener('mousedown', function (e) {
+    if (viewerZoom <= 1) return;
+    e.preventDefault();
+    viewerPanStart = { x: e.clientX, y: e.clientY, panX: viewerPanX, panY: viewerPanY };
+    viewerCanvas.classList.add('panning');
+  });
+
+  document.addEventListener('mousemove', function (e) {
+    if (!viewerPanStart) return;
+    viewerPanX = viewerPanStart.panX + (e.clientX - viewerPanStart.x);
+    viewerPanY = viewerPanStart.panY + (e.clientY - viewerPanStart.y);
+    clampPan();
+    applyZoomTransform();
+  });
+
+  document.addEventListener('mouseup', function () {
+    if (viewerPanStart) { viewerPanStart = null; viewerCanvas.classList.remove('panning'); }
+  });
+
+  // Safari fires these non-standard events for pinch gestures and will zoom
+  // the whole page unless prevented; harmless no-ops in other browsers.
+  document.addEventListener('gesturestart', function (e) { e.preventDefault(); });
+  document.addEventListener('gesturechange', function (e) { e.preventDefault(); });
+
+  window.addEventListener('resize', function () { clampPan(); applyZoomTransform(); });
+
+  // ---------------------------------------------------------------------------
+  // Viewer rating (writes the base photo's sidecar .xmp)
+  // ---------------------------------------------------------------------------
+  function updateViewerRatingStars() {
+    var rating = (viewerSeries && viewerSeries.base.rating) || 0;
+    document.querySelectorAll('.viewer-rating .rating-star').forEach(function (star) {
+      star.classList.toggle('active', parseInt(star.dataset.value, 10) <= rating);
+    });
+  }
+
+  function rateViewerBase(rating) {
+    if (!viewerSeries) return;
+    var series = viewerSeries;
+    fetch('/api/rate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename: series.base.filename, rating: rating }),
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data.error) { setStatus('warn', data.error); return; }
+        series.base.rating = data.rating;
+        if (series === viewerSeries) updateViewerRatingStars();
+        // A Lightroom catalog rating takes precedence over the sidecar
+        if ((data.rating || 0) !== rating) {
+          setStatus('warn', 'Saved to .xmp, but the Lightroom catalog rating (' + (data.rating || 0) + ') takes precedence');
+        }
+      })
+      .catch(function (err) { setStatus('warn', 'Error: ' + err.message); });
+  }
 
   // ---------------------------------------------------------------------------
   // Folder watch form
@@ -1447,9 +1627,27 @@ button:hover {
   });
   document.addEventListener('keydown', function (e) {
     if (!viewerOpen) return;
-    if (e.key === 'Escape') closeViewer();
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === 'Escape') {
+      if (viewerZoom > 1) resetZoomAnimated(); else closeViewer();
+      return;
+    }
+    if (e.key === 'g' || e.key === 'G') { e.preventDefault(); closeViewer(); return; }
+    // Space fits the image to the window. preventDefault also stops it
+    // activating whichever viewer button has focus (e.g. Exit).
+    if (e.key === ' ') { e.preventDefault(); resetZoomAnimated(); return; }
     if (e.key === 'ArrowLeft')  { e.preventDefault(); navigateSeries(-1); }
     if (e.key === 'ArrowRight') { e.preventDefault(); navigateSeries(1); }
+    // e.code rather than e.key so Shift+digit still works on any layout
+    var digit = /^Digit([0-5])$/.exec(e.code);
+    if (digit || e.key === '`') {
+      e.preventDefault();
+      rateViewerBase(digit ? parseInt(digit[1], 10) : 0);
+    }
+  });
+  // Buttons activate on Space keyup, so block that too while the viewer is open
+  document.addEventListener('keyup', function (e) {
+    if (viewerOpen && e.key === ' ') e.preventDefault();
   });
 
   // ---------------------------------------------------------------------------
