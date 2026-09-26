@@ -11,6 +11,7 @@ import argparse
 import re
 import socket
 import subprocess
+import warnings
 from pathlib import Path
 
 from pyftpdlib.authorizers import DummyAuthorizer
@@ -82,7 +83,11 @@ def make_server(upload_dir: Path, port: int, host: str = '0.0.0.0') -> FTPServer
     upload_dir.mkdir(parents=True, exist_ok=True)
 
     authorizer = DummyAuthorizer()
-    authorizer.add_anonymous(str(upload_dir), perm='elradfmwMT')
+    # Anonymous write access is deliberate (the camera logs in anonymously),
+    # so silence pyftpdlib's warning about it
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', 'write permissions assigned to anonymous user', RuntimeWarning)
+        authorizer.add_anonymous(str(upload_dir), perm='elradfmwMT')
 
     # Subclass so settings don't leak onto the shared FTPHandler class
     class Handler(FTPHandler):
