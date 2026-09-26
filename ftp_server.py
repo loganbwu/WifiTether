@@ -2,8 +2,8 @@
 """
 Local FTP server for Canon wifi tethering.
 
-The camera (e.g. EOS R3) uploads each shot over FTP into UPLOAD_DIR, which can
-then be watched by the WifiTether viewer. Anonymous login with full write
+The camera (e.g. EOS R3) uploads each shot over FTP into the upload folder —
+by default today's shoot folder, the same default as the WifiTether viewer. Anonymous login with full write
 access — only run on a private network (e.g. your own hotspot).
 """
 
@@ -15,7 +15,8 @@ from pyftpdlib.authorizers import DummyAuthorizer
 from pyftpdlib.handlers import FTPHandler
 from pyftpdlib.servers import FTPServer
 
-DEFAULT_UPLOAD_DIR = Path.home() / 'Pictures' / 'R3-wifi-tether'
+from defaults import default_shoot_folder
+
 DEFAULT_PORT = 2121
 PASSIVE_PORTS = range(60000, 60100)
 
@@ -48,8 +49,8 @@ def make_server(upload_dir: Path, port: int, host: str = '0.0.0.0') -> FTPServer
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.strip().splitlines()[0])
-    parser.add_argument('--dir', type=Path, default=DEFAULT_UPLOAD_DIR,
-                        help=f'upload folder (default: {DEFAULT_UPLOAD_DIR})')
+    parser.add_argument('--dir', type=Path, default=default_shoot_folder(),
+                        help='upload folder (default: %(default)s)')
     parser.add_argument('--port', type=int, default=DEFAULT_PORT,
                         help=f'FTP port (default: {DEFAULT_PORT})')
     args = parser.parse_args()

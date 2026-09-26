@@ -22,6 +22,13 @@ def test_status_no_folder_initially(client):
     assert data['photo_count'] == 0
 
 
+def test_status_default_folder_matches_ftp_default(client):
+    from pathlib import Path
+    from defaults import default_shoot_folder
+    data = client.get('/api/status').get_json()
+    assert Path(data['default_folder']).expanduser() == default_shoot_folder()
+
+
 # ---------------------------------------------------------------------------
 # /api/watch
 # ---------------------------------------------------------------------------

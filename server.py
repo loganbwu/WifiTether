@@ -30,7 +30,9 @@ from PIL import Image, ImageOps
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
-app = Flask(__name__, static_folder='.', static_url_path='')
+from defaults import default_shoot_folder
+
+app =Flask(__name__, static_folder='.', static_url_path='')
 
 PREVIEW_CACHE_DIR = Path('/tmp/tether_previews')
 PREVIEW_CACHE_DIR.mkdir(exist_ok=True)
@@ -651,6 +653,7 @@ def api_status():
         'folder': folder,
         'photo_count': photo_count,
         'lightroom_catalog': lightroom_catalog,
+        'default_folder': '~/' + str(default_shoot_folder().relative_to(Path.home())),
     })
 
 

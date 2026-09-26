@@ -34,10 +34,10 @@ Some flashes (e.g. off-camera/wireless triggers) never get recorded in the camer
 **Wifi upload from the camera (FTP):**
 For cameras that send shots over FTP (e.g. Canon EOS R3), run a local FTP server in a second terminal:
 ```bash
-rye run ftp                                  # uploads to ~/Pictures/R3-wifi-tether
-rye run ftp --dir ~/Pictures/2026/2026-05-07 --port 2121
+rye run ftp                                  # uploads to today's folder, e.g. ~/Pictures/2026/2026-05-07
+rye run ftp --dir ~/Pictures/some-other-folder --port 2121
 ```
-It prints the host IP and port to enter in the camera's FTP settings (anonymous login, passive mode, passive ports 60000–60099). Point the viewer at the same folder — the camera's own subfolders are picked up by the recursive scan. Anonymous users have full write access, so only run it on a private network such as your own hotspot. Stop it with Ctrl+C, or `pkill -f ftp_server.py`.
+By default it uploads to today's shoot folder (creating it if needed), which is also the viewer's default folder, so running both with no arguments just works. It prints the host IP and port to enter in the camera's FTP settings (anonymous login, passive mode, passive ports 60000–60099). Point the viewer at the same folder — the camera's own subfolders are picked up by the recursive scan. Anonymous users have full write access, so only run it on a private network such as your own hotspot. Stop it with Ctrl+C, or `pkill -f ftp_server.py`.
 
 **Testing:**
 ```bash
