@@ -32,6 +32,12 @@ piexif==1.1.3
 pillow==12.2.0
 pluggy==1.6.0
     # via pytest
+pyasynchat==1.0.5
+    # via pyftpdlib
+pyasyncore==1.0.5
+    # via pyasynchat
+    # via pyftpdlib
+pyftpdlib==2.2.0
 pygments==2.20.0
     # via pytest
 pytest==9.0.3

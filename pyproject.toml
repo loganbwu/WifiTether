@@ -10,6 +10,7 @@ dependencies = [
     "watchdog>=4.0",
     "pillow>=11.0",
     "rawpy>=0.21",
+    "pyftpdlib>=2.0",
 ]
 requires-python = ">= 3.12"
 
@@ -23,6 +24,7 @@ dev-dependencies = [
 
 [tool.rye.scripts]
 wifitether = { cmd = "python server.py" }
+ftp = { cmd = "python ftp_server.py" }
 test = { cmd = "pytest tests/ -v" }
 
 [tool.pytest.ini_options]
