@@ -270,6 +270,7 @@ button:hover {
   width: 100%;
   max-height: 100vh;
   overflow: hidden;
+  position: relative;
 }
 
 .viewer-canvas-wrap {
@@ -316,7 +317,17 @@ body.no-overlays .tether-card__badge { display: none; }
   display: flex;
   flex-direction: column;
   gap: 14px;
+  /* Hidden off the right edge until the mouse approaches it, like the macOS
+     full screen dock. Overlays the image rather than resizing it. */
+  position: absolute;
+  top: 0; right: 0; bottom: 0;
+  transform: translateX(100%);
+  transition: transform 0.2s ease-out;
+  box-shadow: -4px 0 16px rgba(0,0,0,0.5);
+  z-index: 1;
 }
+
+.viewer-controls.revealed { transform: none; }
 
 .viewer-header {
   display: flex;
@@ -443,7 +454,8 @@ body.no-overlays .tether-card__badge { display: none; }
 
 @media (max-width: 640px) {
   .viewer-content { flex-direction: column; }
-  .viewer-controls { width: 100%; min-width: unset; max-height: 40vh; }
+  /* No hover on touch screens, so keep the panel docked below the image */
+  .viewer-controls { width: 100%; min-width: unset; max-height: 40vh; position: static; transform: none; box-shadow: none; }
   .viewer-canvas-wrap { flex: 1; min-height: 0; }
 }
 </style>
@@ -1144,6 +1156,7 @@ body.no-overlays .tether-card__badge { display: none; }
     if (animFrameId) { cancelAnimationFrame(animFrameId); animFrameId = null; }
     document.getElementById('viewer-modal').style.display = 'none';
     document.body.style.overflow = '';
+    setControlsRevealed(false);
     if (viewerLastFocused && typeof viewerLastFocused.focus === 'function') {
       viewerLastFocused.focus();
     }
@@ -1504,6 +1517,29 @@ body.no-overlays .tether-card__badge { display: none; }
   document.addEventListener('gesturechange', function (e) { e.preventDefault(); });
 
   window.addEventListener('resize', function () { clampPan(); applyZoomTransform(); });
+
+  // ---------------------------------------------------------------------------
+  // Auto-hiding controls panel: slides in when the mouse nears the right edge
+  // and slides out once the mouse leaves it. Tab also reveals it so keyboard
+  // focus never lands on hidden buttons.
+  // ---------------------------------------------------------------------------
+  var CONTROLS_REVEAL_PX = 24;
+  var viewerControls = document.querySelector('.viewer-controls');
+
+  function setControlsRevealed(on) {
+    viewerControls.classList.toggle('revealed', on);
+  }
+
+  document.addEventListener('mousemove', function (e) {
+    if (!viewerOpen || viewerPanStart) return;
+    if (e.clientX >= window.innerWidth - CONTROLS_REVEAL_PX) setControlsRevealed(true);
+  });
+
+  viewerControls.addEventListener('mouseleave', function () { setControlsRevealed(false); });
+
+  document.addEventListener('keydown', function (e) {
+    if (viewerOpen && e.key === 'Tab') setControlsRevealed(true);
+  });
 
   // ---------------------------------------------------------------------------
   // Viewer rating (writes the base photo's sidecar .xmp)

@@ -104,6 +104,8 @@ Some flashes (e.g. off-camera/wireless triggers) never get recorded in the camer
 | Two-finger swipe, or drag | Pan while zoomed in |
 | Double-click | Zoom in to that point, or reset if already zoomed |
 
+The viewer's controls panel (title, Exit button, stars, overlays) is hidden so the image fills the screen. Move the mouse to the right edge of the window, or press `Tab`, to slide it in; it hides again when the mouse leaves it. On narrow screens (phones) it stays docked below the image.
+
 Zoom resets when the viewer is opened from the gallery, but carries over when moving between series or when a new shot arrives, so you can check focus in the same crop.
 
 ## Testing
