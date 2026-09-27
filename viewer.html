@@ -198,6 +198,18 @@ button:hover {
 .tether-card__img-wrap {
   width: 100%;
   background: #0a0a0a;
+  position: relative;
+}
+
+.tether-card__stars {
+  position: absolute;
+  bottom: 4px;
+  left: 6px;
+  font-size: 13px;
+  letter-spacing: 1px;
+  color: var(--pale-blue);
+  text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+  pointer-events: none;
 }
 
 .tether-card__img-wrap img,
@@ -308,26 +320,128 @@ body.no-overlays .tether-card__badge { display: none; }
   gap: 2px;
 }
 
-.viewer-controls {
+/* Dock holding the controls panel and its tab. Hidden off the right edge
+   (bar the tab) until revealed, like the macOS full screen dock, and overlays
+   the image rather than resizing it. */
+.viewer-controls-dock {
+  position: absolute;
+  top: 0; right: 0; bottom: 0;
   width: 280px;
-  min-width: 240px;
+  transform: translateX(100%);
+  transition: transform 0.2s ease-out;
+  z-index: 2;
+}
+
+.viewer-controls-dock.revealed {
+  transform: none;
+  box-shadow: -4px 0 16px rgba(0,0,0,0.5);
+}
+
+.viewer-controls {
+  height: 100%;
   background: var(--dark);
   padding: 20px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 14px;
-  /* Hidden off the right edge until the mouse approaches it, like the macOS
-     full screen dock. Overlays the image rather than resizing it. */
+}
+
+/* Tabs sticking out of each dock's inner edge, hinting that it is there */
+.viewer-dock-handle {
   position: absolute;
-  top: 0; right: 0; bottom: 0;
-  transform: translateX(100%);
+  padding: 0;
+  background: rgba(40,40,40,0.85);
+  border: 1px solid var(--border);
+  color: var(--grey);
+  font-size: 14px;
+  line-height: 1;
+  transition: color 0.15s;
+}
+
+.viewer-dock-handle:hover {
+  background: rgba(40,40,40,0.85);
+  border-color: var(--border);
+  color: var(--pale-blue);
+}
+
+.viewer-controls-dock .viewer-dock-handle {
+  top: 50%;
+  left: -18px;
+  transform: translateY(-50%);
+  width: 18px;
+  height: 64px;
+  border-right: none;
+}
+
+.viewer-filmstrip-dock .viewer-dock-handle {
+  left: 50%;
+  top: -18px;
+  transform: translateX(-50%);
+  width: 64px;
+  height: 18px;
+  border-bottom: none;
+}
+
+/* Filmstrip: one tile per series, auto-hidden below the bottom edge in the
+   same way as the controls panel */
+.viewer-filmstrip-dock {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 110px;
+  transform: translateY(100%);
   transition: transform 0.2s ease-out;
-  box-shadow: -4px 0 16px rgba(0,0,0,0.5);
   z-index: 1;
 }
 
-.viewer-controls.revealed { transform: none; }
+.viewer-filmstrip-dock.revealed { transform: none; }
+
+.viewer-filmstrip {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  background: rgba(20,20,20,0.92);
+  border-top: 1px solid var(--border);
+  scrollbar-width: thin;
+  scrollbar-color: #444 transparent;
+}
+
+.film-tile {
+  flex: 0 0 auto;
+  width: 90px;
+  height: 90px;
+  position: relative;
+  background: #2a2a2a;
+  border: 2px solid transparent;
+  cursor: pointer;
+  overflow: hidden;
+  transition: border-color 0.15s;
+}
+
+.film-tile:hover { border-color: #888; }
+.film-tile.current { border-color: var(--pale-blue); }
+
+.film-tile img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.film-tile__stars {
+  position: absolute;
+  bottom: 3px;
+  left: 4px;
+  font-size: 11px;
+  letter-spacing: 1px;
+  color: var(--pale-blue);
+  text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+  pointer-events: none;
+}
 
 .viewer-header {
   display: flex;
@@ -455,7 +569,11 @@ body.no-overlays .tether-card__badge { display: none; }
 @media (max-width: 640px) {
   .viewer-content { flex-direction: column; }
   /* No hover on touch screens, so keep the panel docked below the image */
-  .viewer-controls { width: 100%; min-width: unset; max-height: 40vh; position: static; transform: none; box-shadow: none; }
+  .viewer-controls-dock { position: static; width: 100%; transform: none; box-shadow: none; }
+  .viewer-controls { max-height: 40vh; }
+  .viewer-dock-handle { display: none; }
+  .viewer-filmstrip-dock { position: static; transform: none; flex-shrink: 0; height: 80px; }
+  .film-tile { width: 64px; height: 64px; }
   .viewer-canvas-wrap { flex: 1; min-height: 0; }
 }
 </style>
@@ -493,13 +611,20 @@ body.no-overlays .tether-card__badge { display: none; }
     <div class="viewer-canvas-wrap">
       <canvas id="viewer-canvas"></canvas>
     </div>
-    <div class="viewer-controls">
-      <div class="viewer-header">
-        <h2 id="viewer-title">Multiple Exposure</h2>
-        <button class="viewer-close-btn" id="viewer-close" aria-label="Close viewer"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg><span class="viewer-close-btn-label">Exit</span></button>
+    <div class="viewer-filmstrip-dock" id="viewer-filmstrip-dock">
+      <button class="viewer-dock-handle" aria-label="Show or hide the filmstrip (S)" title="Filmstrip (S)">▴</button>
+      <div class="viewer-filmstrip" id="viewer-filmstrip" aria-label="Filmstrip"></div>
+    </div>
+    <div class="viewer-controls-dock" id="viewer-controls-dock">
+      <button class="viewer-dock-handle" aria-label="Show or hide the info panel (I)" title="Info panel (I)">◂</button>
+      <div class="viewer-controls">
+        <div class="viewer-header">
+          <h2 id="viewer-title">Multiple Exposure</h2>
+          <button class="viewer-close-btn" id="viewer-close" aria-label="Close viewer"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg><span class="viewer-close-btn-label">Exit</span></button>
+        </div>
+        <p class="ctrl-instructions"><span class="overlay-only">Hover to preview an overlay; click to enable it. Combine multiple exposures to preview the composite. </span>Use ← → to navigate, 1–5 to rate (` to clear), G to return to the gallery, F for full screen, I and S to pin this panel and the filmstrip open (or click their tabs, or move the mouse to the right or bottom edge to peek). Pinch to zoom, two-finger swipe to pan, Space to fit to window.</p>
+        <div id="viewer-overlays-container"></div>
       </div>
-      <p class="ctrl-instructions"><span class="overlay-only">Hover to preview an overlay; click to enable it. Combine multiple exposures to preview the composite. </span>Use ← → to navigate, 1–5 to rate (` to clear), G to return to the gallery, F for full screen. Pinch to zoom, two-finger swipe to pan, Space to fit to window.</p>
-      <div id="viewer-overlays-container"></div>
     </div>
   </div>
 </div>
@@ -652,12 +777,14 @@ body.no-overlays .tether-card__badge { display: none; }
       }
       card = card || createCard(c, s);
       updateCardOverlays(card, s);
+      updateCardStars(card, s);
       card.classList.toggle('tether-card--newest', isNewest);
       if (isNewest) newNewestEl = card;
       gallery.appendChild(card);
     });
 
     layoutGallery();
+    renderFilmstrip();
 
     if (newNewestEl) {
       newNewestEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -729,6 +856,20 @@ body.no-overlays .tether-card__badge { display: none; }
     });
   }
 
+  function updateCardStars(card, s) {
+    var stars = card.querySelector('.tether-card__stars');
+    if (stars) stars.textContent = starsText(s.base.rating || 0);
+  }
+
+  // Refreshes every card's stars from currentSeries without a full re-render
+  function updateGalleryStars() {
+    document.querySelectorAll('#gallery .tether-card').forEach(function (card) {
+      var fn = card.dataset.baseFilename;
+      var s = currentSeries.find(function (x) { return x.base.filename === fn; });
+      if (s) updateCardStars(card, s);
+    });
+  }
+
   function cardAriaLabel(s) {
     var count = s.overlays.length;
     return s.base.filename + (count > 0 ? ', ' + count + ' overlay' + (count !== 1 ? 's' : '') : '');
@@ -767,6 +908,9 @@ body.no-overlays .tether-card__badge { display: none; }
       var canvas = document.createElement('canvas');
       canvas.setAttribute('aria-hidden', 'true');
       wrap.appendChild(canvas);
+      var stars = document.createElement('div');
+      stars.className = 'tether-card__stars';
+      wrap.appendChild(stars);
     }
 
     var info = document.createElement('div');
@@ -1138,6 +1282,7 @@ body.no-overlays .tether-card__badge { display: none; }
 
     renderViewerControls(series);
     loadViewerImages(series);
+    renderFilmstrip();
     // Deferred: moving focus synchronously here (e.g. while still inside the
     // keydown handler for Enter/Space on the triggering card) can cause the
     // browser's native "Enter activates the focused button" behaviour to
@@ -1156,7 +1301,8 @@ body.no-overlays .tether-card__badge { display: none; }
     if (animFrameId) { cancelAnimationFrame(animFrameId); animFrameId = null; }
     document.getElementById('viewer-modal').style.display = 'none';
     document.body.style.overflow = '';
-    setControlsRevealed(false);
+    controlsDock.reset();
+    filmstripDock.reset();
     if (viewerLastFocused && typeof viewerLastFocused.focus === 'function') {
       viewerLastFocused.focus();
     }
@@ -1169,8 +1315,69 @@ body.no-overlays .tether-card__badge { display: none; }
     if (idx === -1) return;
     var newIdx = idx + delta;
     if (newIdx < 0 || newIdx >= currentSeries.length) return;
-    var s = currentSeries[newIdx];
+    openSeriesAtLatest(currentSeries[newIdx]);
+  }
+
+  function openSeriesAtLatest(s) {
     openViewer(s, s.overlays.length > 0 ? s.overlays.length - 1 : null);
+  }
+
+  function starsText(rating) {
+    return rating > 0 ? '★'.repeat(rating) : '';
+  }
+
+  // ---------------------------------------------------------------------------
+  // Filmstrip: one tile per series, in gallery order. A tethered session is
+  // small enough that a plain DOM node per series is fine (unlike FastCuller's
+  // virtualised pool); tiles are reused by filename so re-renders on each new
+  // shot or rating change don't reload every image.
+  // ---------------------------------------------------------------------------
+  function renderFilmstrip() {
+    if (!viewerOpen) return;
+    var strip = document.getElementById('viewer-filmstrip');
+    var pool = {};
+    Array.from(strip.children).forEach(function (el) { pool[el.dataset.filename] = el; });
+    strip.innerHTML = '';
+
+    currentSeries.forEach(function (s) {
+      var tile = pool[s.base.filename];
+      if (!tile) {
+        tile = document.createElement('div');
+        tile.className = 'film-tile';
+        tile.dataset.filename = s.base.filename;
+        var img = document.createElement('img');
+        img.alt = '';
+        img.loading = 'lazy';
+        tile.appendChild(img);
+        var stars = document.createElement('div');
+        stars.className = 'film-tile__stars';
+        tile.appendChild(stars);
+        // Looks the series up at click time, as currentSeries is replaced on every fetch
+        tile.addEventListener('click', function () {
+          var fn = this.dataset.filename;
+          var entry = currentSeries.find(function (x) { return x.base.filename === fn; });
+          if (entry) openSeriesAtLatest(entry);
+        });
+      }
+      var img = tile.querySelector('img');
+      var src = s.base.error ? '' : previewUrl(s.base.filename) + '?v=' + encodeURIComponent(s.base.mtime);
+      if (img.getAttribute('src') !== src) {
+        if (src) img.src = src; else img.removeAttribute('src');
+      }
+      tile.querySelector('.film-tile__stars').textContent = starsText(s.base.rating || 0);
+      tile.classList.toggle('current', !!viewerSeries && s.base.filename === viewerSeries.base.filename);
+      strip.appendChild(tile);
+    });
+
+    centreFilmstrip('smooth');
+  }
+
+  function centreFilmstrip(behavior) {
+    var strip = document.getElementById('viewer-filmstrip');
+    var current = strip.querySelector('.film-tile.current');
+    if (!current) return;
+    var left = current.offsetLeft + current.offsetWidth / 2 - strip.clientWidth / 2;
+    strip.scrollTo({ left: Math.max(0, left), behavior: behavior });
   }
 
   function jumpToNewest(series) {
@@ -1519,26 +1726,48 @@ body.no-overlays .tether-card__badge { display: none; }
   window.addEventListener('resize', function () { clampPan(); applyZoomTransform(); });
 
   // ---------------------------------------------------------------------------
-  // Auto-hiding controls panel: slides in when the mouse nears the right edge
-  // and slides out once the mouse leaves it. Tab also reveals it so keyboard
-  // focus never lands on hidden buttons.
+  // Auto-hiding docks (info panel on the right, filmstrip at the bottom). Each
+  // starts hidden, peeks in while the mouse is at its screen edge (or over
+  // it), and its tab or shortcut key pins it open. Pins carry over when moving
+  // between series and reset when the viewer is closed, like zoom. Tab also
+  // peeks the info panel so keyboard focus never lands on hidden buttons.
   // ---------------------------------------------------------------------------
-  var CONTROLS_REVEAL_PX = 24;
-  var viewerControls = document.querySelector('.viewer-controls');
+  // Shallower than the tabs (18px) so reaching for a tab doesn't peek its dock
+  // and slide the tab away from the cursor
+  var DOCK_REVEAL_PX = 12;
 
-  function setControlsRevealed(on) {
-    viewerControls.classList.toggle('revealed', on);
+  function makeDock(el, glyphs, onReveal) {
+    var handle = el.querySelector('.viewer-dock-handle');
+    var dock = { pinned: false, peeking: false };
+    var shown = false;
+    function update() {
+      var on = dock.pinned || dock.peeking;
+      el.classList.toggle('revealed', on);
+      handle.textContent = on ? glyphs[1] : glyphs[0];
+      if (on && !shown && onReveal) onReveal();
+      shown = on;
+    }
+    dock.peek = function (on) { dock.peeking = on; update(); };
+    dock.togglePin = function () { dock.pinned = !dock.pinned; dock.peeking = false; update(); };
+    dock.reset = function () { dock.pinned = false; dock.peeking = false; update(); };
+    handle.addEventListener('click', dock.togglePin);
+    el.addEventListener('mouseleave', function () { dock.peek(false); });
+    return dock;
   }
+
+  var controlsDock = makeDock(document.getElementById('viewer-controls-dock'), ['◂', '▸']);
+  var filmstripDock = makeDock(document.getElementById('viewer-filmstrip-dock'), ['▴', '▾'],
+    function () { centreFilmstrip('instant'); });
 
   document.addEventListener('mousemove', function (e) {
     if (!viewerOpen || viewerPanStart) return;
-    if (e.clientX >= window.innerWidth - CONTROLS_REVEAL_PX) setControlsRevealed(true);
+    if (e.target.classList.contains('viewer-dock-handle')) return;
+    if (e.clientX >= window.innerWidth - DOCK_REVEAL_PX) controlsDock.peek(true);
+    if (e.clientY >= window.innerHeight - DOCK_REVEAL_PX) filmstripDock.peek(true);
   });
 
-  viewerControls.addEventListener('mouseleave', function () { setControlsRevealed(false); });
-
   document.addEventListener('keydown', function (e) {
-    if (viewerOpen && e.key === 'Tab') setControlsRevealed(true);
+    if (viewerOpen && e.key === 'Tab') controlsDock.peek(true);
   });
 
   // ---------------------------------------------------------------------------
@@ -1564,6 +1793,8 @@ body.no-overlays .tether-card__badge { display: none; }
         if (data.error) { setStatus('warn', data.error); return; }
         series.base.rating = data.rating;
         if (series === viewerSeries) updateViewerRatingStars();
+        renderFilmstrip();
+        updateGalleryStars();
         // A Lightroom catalog rating takes precedence over the sidecar
         if ((data.rating || 0) !== rating) {
           setStatus('warn', 'Saved to .xmp, but the Lightroom catalog rating (' + (data.rating || 0) + ') takes precedence');
@@ -1691,6 +1922,8 @@ body.no-overlays .tether-card__badge { display: none; }
       return;
     }
     if (e.key === 'g' || e.key === 'G') { e.preventDefault(); closeViewer(); return; }
+    if (e.key === 'i' || e.key === 'I') { e.preventDefault(); controlsDock.togglePin(); return; }
+    if (e.key === 's' || e.key === 'S') { e.preventDefault(); filmstripDock.togglePin(); return; }
     // Space fits the image to the window. preventDefault also stops it
     // activating whichever viewer button has focus (e.g. Exit).
     if (e.key === ' ') { e.preventDefault(); resetZoomAnimated(); return; }

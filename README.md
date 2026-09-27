@@ -85,6 +85,7 @@ Some flashes (e.g. off-camera/wireless triggers) never get recorded in the camer
 
 **Star ratings:**
 - In the viewer, rate the series' base photo with the star buttons or the `1`–`5` keys (`` ` `` or `0` clears it; clicking the current star also clears it). The rating is written to the photo's sidecar `.xmp` (e.g. `IMG_0001.xmp`), created if needed. Other tags already in the sidecar, such as Lightroom edits and keywords, are kept.
+- Gallery thumbnails show the base photo's rating as stars in the bottom-left corner.
 - The gallery can be filtered to series whose base photo is rated N stars and up, using the star row above the gallery.
 - Ratings are read from a Lightroom catalog (`.lrcat`) if you point the app at one, falling back to a sidecar `.xmp` or embedded XMP otherwise. So if a catalog is set and already has a rating for the photo, that rating still wins over one set in the viewer, and the viewer shows a warning. Lightroom only picks up sidecar ratings when you use Metadata > Read Metadata from Files (or when importing).
 - Rating changes made after a photo is loaded are picked up automatically — sidecar/embedded XMP edits are detected instantly, and the Lightroom catalog is polled every 5 seconds.
@@ -98,13 +99,19 @@ Some flashes (e.g. off-camera/wireless triggers) never get recorded in the camer
 | `` ` `` or `0` | Clear the base photo's rating |
 | `G` | Back to the gallery |
 | `F` | Toggle full screen (also works in the gallery) |
+| `I` | Pin / unpin the info panel |
+| `S` | Pin / unpin the filmstrip |
 | `Space` | Fit the image to the window (reset zoom) |
 | `Esc` | Reset zoom if zoomed in, otherwise back to the gallery |
 | Pinch (or `Cmd/Ctrl` + scroll) | Zoom in/out, centred on the cursor |
 | Two-finger swipe, or drag | Pan while zoomed in |
 | Double-click | Zoom in to that point, or reset if already zoomed |
 
-The viewer's controls panel (title, Exit button, stars, overlays) is hidden so the image fills the screen. Move the mouse to the right edge of the window, or press `Tab`, to slide it in; it hides again when the mouse leaves it. On narrow screens (phones) it stays docked below the image.
+The viewer starts with just the image, full window. Two docks are tucked away and marked by small tabs on the screen edges:
+- **Info panel** (right edge): title, Exit button, stars and overlays.
+- **Filmstrip** (bottom edge): one thumbnail per series with its star rating; click one to jump to it. It stays centred on the current series.
+
+Move the mouse to an edge to peek a dock; it hides again when the mouse leaves it. Click its tab (or press `I` / `S`) to pin it open. Pins carry over as you move between series and reset when you go back to the gallery. On narrow screens (phones) both stay docked below the image.
 
 Zoom resets when the viewer is opened from the gallery, but carries over when moving between series or when a new shot arrives, so you can check focus in the same crop.
 
